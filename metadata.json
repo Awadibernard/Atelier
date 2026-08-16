@@ -1,0 +1,6 @@
+{
+  "name": "AtelierDevis",
+  "description": "Calculateur de coût de revient, calcul de marge et générateur de devis professionnels pour ateliers de fabrication sur mesure (métallerie, soudure, menuiserie, alu).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
