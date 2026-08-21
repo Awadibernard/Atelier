@@ -20,6 +20,8 @@ import {
 } from '../types';
 import { formatCurrency } from '../utils/formatters';
 import { sanitizeNumber } from '../engine/calculator';
+import { useNotification } from '../context/NotificationContext';
+import { focusAndScrollToField } from '../utils/formValidation';
 
 interface Props {
   materials: MaterialLibraryItem[];
@@ -65,6 +67,7 @@ export function MaterialLibrary({
   onDeleteLaborRate,
 }: Props) {
   const currency = profile.currencySymbol || 'FCFA';
+  const { showSuccess, showError, showInfo } = useNotification();
 
   const [activeTab, setActiveTab] = useState<'materials' | 'labor'>('materials');
   const [selectedCategory, setSelectedCategory] = useState<string>('Tous');
@@ -125,7 +128,17 @@ export function MaterialLibrary({
 
   const handleSaveMaterialSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!matForm.name.trim()) return;
+    if (!matForm.name.trim()) {
+      showError('Veuillez renseigner le nom du matériau.');
+      focusAndScrollToField('material-form-name');
+      return;
+    }
+
+    if (matForm.defaultUnitPrice < 0) {
+      showError('Le prix unitaire ne peut pas être négatif.');
+      focusAndScrollToField('material-form-price');
+      return;
+    }
 
     onSaveMaterial({
       id: editingMaterialId,
@@ -136,6 +149,7 @@ export function MaterialLibrary({
     });
 
     setIsEditingMaterial(false);
+    showSuccess(`✓ Matériau « ${matForm.name.trim()} » enregistré.`);
   };
 
   const handleSaveInlinePrice = (item: MaterialLibraryItem) => {
@@ -153,6 +167,7 @@ export function MaterialLibrary({
         delete updated[item.id];
         return updated;
       });
+      showSuccess(`✓ Prix mis à jour pour « ${item.name} »`);
     }
   };
 
@@ -179,7 +194,17 @@ export function MaterialLibrary({
 
   const handleSaveLaborSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!laborForm.task.trim()) return;
+    if (!laborForm.task.trim()) {
+      showError('Veuillez renseigner l\'intitulé de la tâche.');
+      focusAndScrollToField('labor-form-task');
+      return;
+    }
+
+    if (laborForm.defaultRate < 0) {
+      showError('Le taux horaire ne peut pas être négatif.');
+      focusAndScrollToField('labor-form-rate');
+      return;
+    }
 
     onSaveLaborRate({
       id: editingLaborId,
@@ -189,6 +214,7 @@ export function MaterialLibrary({
     });
 
     setIsEditingLabor(false);
+    showSuccess(`✓ Tarif « ${laborForm.task.trim()} » enregistré.`);
   };
 
   return (
@@ -360,9 +386,10 @@ export function MaterialLibrary({
                         onClick={() => {
                           if (window.confirm(`Supprimer le matériau "${mat.name}" ?`)) {
                             onDeleteMaterial(mat.id);
+                            showInfo(`Matériau « ${mat.name} » supprimé.`);
                           }
                         }}
-                        className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                        className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
                         title="Supprimer"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -416,9 +443,10 @@ export function MaterialLibrary({
                     onClick={() => {
                       if (window.confirm(`Supprimer le tarif "${rate.task}" ?`)) {
                         onDeleteLaborRate(rate.id);
+                        showInfo(`Tarif « ${rate.task} » supprimé.`);
                       }
                     }}
-                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -447,10 +475,11 @@ export function MaterialLibrary({
 
             <form onSubmit={handleSaveMaterialSubmit} className="p-5 space-y-4 text-xs">
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">
+                <label htmlFor="material-form-name" className="font-semibold text-slate-700 block mb-1">
                   Nom du matériau *
                 </label>
                 <input
+                  id="material-form-name"
                   type="text"
                   required
                   value={matForm.name}
@@ -462,8 +491,9 @@ export function MaterialLibrary({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Catégorie</label>
+                  <label htmlFor="material-form-category" className="font-semibold text-slate-700 block mb-1">Catégorie</label>
                   <select
+                    id="material-form-category"
                     value={matForm.category}
                     onChange={(e) => setMatForm({ ...matForm, category: e.target.value })}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-900"
@@ -477,8 +507,9 @@ export function MaterialLibrary({
                 </div>
 
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Unité</label>
+                  <label htmlFor="material-form-unit" className="font-semibold text-slate-700 block mb-1">Unité</label>
                   <select
+                    id="material-form-unit"
                     value={matForm.unit}
                     onChange={(e) =>
                       setMatForm({ ...matForm, unit: e.target.value as MaterialUnit })
@@ -495,10 +526,11 @@ export function MaterialLibrary({
               </div>
 
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">
+                <label htmlFor="material-form-price" className="font-semibold text-slate-700 block mb-1">
                   Prix Unitaire par défaut ({currency}) *
                 </label>
                 <input
+                  id="material-form-price"
                   type="number"
                   min="0"
                   required
@@ -549,10 +581,11 @@ export function MaterialLibrary({
 
             <form onSubmit={handleSaveLaborSubmit} className="p-5 space-y-4 text-xs">
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">
+                <label htmlFor="labor-form-task" className="font-semibold text-slate-700 block mb-1">
                   Intitulé de la tâche *
                 </label>
                 <input
+                  id="labor-form-task"
                   type="text"
                   required
                   value={laborForm.task}
@@ -563,10 +596,11 @@ export function MaterialLibrary({
               </div>
 
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">
+                <label htmlFor="labor-form-rate" className="font-semibold text-slate-700 block mb-1">
                   Taux horaire ({currency}/h) *
                 </label>
                 <input
+                  id="labor-form-rate"
                   type="number"
                   min="0"
                   required
@@ -580,10 +614,11 @@ export function MaterialLibrary({
               </div>
 
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">
+                <label htmlFor="labor-form-desc" className="font-semibold text-slate-700 block mb-1">
                   Description / Remarques (Optionnel)
                 </label>
                 <textarea
+                  id="labor-form-desc"
                   rows={2}
                   value={laborForm.description}
                   onChange={(e) => setLaborForm({ ...laborForm, description: e.target.value })}

@@ -1,14 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   FileText,
   Save,
   Download,
   Share2,
-  Printer,
   Eye,
   Plus,
   Trash2,
-  Calendar,
   User,
   Building2,
   Coins,
@@ -16,7 +14,9 @@ import {
   ArrowLeft,
   Layers,
   Sparkles,
-  Percent,
+  Calculator,
+  AlertCircle,
+  RotateCcw,
 } from 'lucide-react';
 import {
   BusinessProfile,
@@ -29,10 +29,9 @@ import {
   QuoteLineItem,
   QuoteStatus,
 } from '../types';
-import { calculateDeposit, roundPrice, sanitizeNumber } from '../engine/calculator';
+import { calculateDeposit, sanitizeNumber } from '../engine/calculator';
 import {
   formatCurrency,
-  formatDateShort,
   getTodayDateString,
   addDaysToDateString,
   generateId,
@@ -40,6 +39,9 @@ import {
 import { QuotePreviewModal } from './QuotePreviewModal';
 import { downloadQuotePDF } from '../utils/pdfGenerator';
 import { shareOnWhatsApp } from '../utils/whatsappShare';
+import { getDraftQuote, saveDraftQuote, clearDraftQuote, clearDraftCalculation } from '../storage/db';
+import { useNotification } from '../context/NotificationContext';
+import { focusAndScrollToField } from '../utils/formValidation';
 
 interface Props {
   profile: BusinessProfile;
@@ -50,6 +52,7 @@ interface Props {
   } | null;
   onSaveQuote: (quote: Quote) => void;
   onCancel: () => void;
+  onBackToCalculation?: (currentQuote: Quote) => void;
   nextQuoteNumber: string;
 }
 
@@ -59,13 +62,28 @@ export function QuoteBuilder({
   fromCalculation,
   onSaveQuote,
   onCancel,
+  onBackToCalculation,
   nextQuoteNumber,
 }: Props) {
   const currency = profile.currencySymbol || 'FCFA';
+  const { showSuccess, showError, showInfo } = useNotification();
+
+  // Check if saved draft exists and applies to this context
+  const activeDraft = useMemo(() => {
+    const stored = getDraftQuote();
+    if (!stored) return null;
+    if (editingQuote) {
+      return stored.editingQuoteId === editingQuote.id ? stored : null;
+    }
+    if (!fromCalculation && !stored.editingQuoteId) {
+      return stored;
+    }
+    return null;
+  }, [editingQuote, fromCalculation]);
 
   // Initial Customer state
   const [customer, setCustomer] = useState<CustomerInfo>(
-    editingQuote?.customer || {
+    activeDraft?.customer || editingQuote?.customer || {
       name: '',
       phone: '',
       email: '',
@@ -76,31 +94,43 @@ export function QuoteBuilder({
 
   // Quote Meta
   const [quoteNumber, setQuoteNumber] = useState<string>(
-    editingQuote?.quoteNumber || nextQuoteNumber
+    activeDraft?.quoteNumber || editingQuote?.quoteNumber || nextQuoteNumber
   );
   const [createdAt, setCreatedAt] = useState<string>(
-    editingQuote?.createdAt ? editingQuote.createdAt.substring(0, 10) : getTodayDateString()
+    activeDraft?.createdAt
+      ? activeDraft.createdAt.substring(0, 10)
+      : editingQuote?.createdAt
+      ? editingQuote.createdAt.substring(0, 10)
+      : getTodayDateString()
   );
   const [validUntil, setValidUntil] = useState<string>(
-    editingQuote?.validUntil
+    activeDraft?.validUntil
+      ? activeDraft.validUntil.substring(0, 10)
+      : editingQuote?.validUntil
       ? editingQuote.validUntil.substring(0, 10)
       : addDaysToDateString(getTodayDateString(), profile.defaultValidityDays || 30)
   );
-  const [status, setStatus] = useState<QuoteStatus>(editingQuote?.status || 'Brouillon');
+  const [status, setStatus] = useState<QuoteStatus>(
+    activeDraft?.status || editingQuote?.status || 'Brouillon'
+  );
   const [projectTitle, setProjectTitle] = useState<string>(
-    editingQuote?.projectTitle || 'Fabrication et pose sur mesure'
+    activeDraft?.projectTitle || editingQuote?.projectTitle || ''
   );
   const [projectDescription, setProjectDescription] = useState<string>(
-    editingQuote?.projectDescription || ''
+    activeDraft?.projectDescription || editingQuote?.projectDescription || ''
   );
 
   // Detail level for customer
   const [detailLevel, setDetailLevel] = useState<ClientDetailLevel>(
-    editingQuote?.detailLevel || 'grouped'
+    activeDraft?.detailLevel || editingQuote?.detailLevel || 'grouped'
   );
 
   // Line items
   const [lineItems, setLineItems] = useState<QuoteLineItem[]>(() => {
+    if (activeDraft?.lineItems && activeDraft.lineItems.length > 0) {
+      return activeDraft.lineItems;
+    }
+
     if (editingQuote?.lineItems && editingQuote.lineItems.length > 0) {
       return editingQuote.lineItems;
     }
@@ -109,11 +139,11 @@ export function QuoteBuilder({
       const { input, result } = fromCalculation;
 
       // If user wants grouped summary (standard for workshops)
-      if (input.materials.length > 0) {
+      if (input.materials.length > 0 || result.laborCost > 0) {
         return [
           {
             id: generateId(),
-            description: `Fabrication de l'ouvrage selon spécifications (Matières & Réalisation)`,
+            description: `Fabrication de l'ouvrage selon spécifications (Fourniture & Main d'œuvre)`,
             quantity: 1,
             unit: 'ensemble',
             unitPrice: result.roundedSellingPrice,
@@ -127,23 +157,23 @@ export function QuoteBuilder({
     return [
       {
         id: generateId(),
-        description: 'Fabrication métallique sur mesure',
+        description: '',
         quantity: 1,
         unit: 'forfait',
-        unitPrice: 50000,
-        total: 50000,
+        unitPrice: 0,
+        total: 0,
       },
     ];
   });
 
   // Discount
   const [discountPercent, setDiscountPercent] = useState<number>(
-    editingQuote?.discountPercent || 0
+    activeDraft?.discountPercent ?? editingQuote?.discountPercent ?? 0
   );
 
   // Deposit Config
   const [depositConfig, setDepositConfig] = useState<DepositConfig>(
-    editingQuote?.depositConfig || {
+    activeDraft?.depositConfig || editingQuote?.depositConfig || {
       type: 'percent',
       value: 40,
     }
@@ -151,15 +181,55 @@ export function QuoteBuilder({
 
   // Notes and payment terms
   const [paymentTerms, setPaymentTerms] = useState<string>(
-    editingQuote?.paymentTerms ?? profile.defaultPaymentTerms ?? 'Acompte de 40% à la commande, solde à la livraison.'
+    activeDraft?.paymentTerms ?? editingQuote?.paymentTerms ?? profile.defaultPaymentTerms ?? 'Acompte de 40% à la commande, solde à la livraison.'
   );
   const [notes, setNotes] = useState<string>(
-    editingQuote?.notes ?? profile.footerNotes ?? 'Devis valable 30 jours. Délais de fabrication convenus à la commande.'
+    activeDraft?.notes ?? editingQuote?.notes ?? profile.footerNotes ?? 'Devis valable 30 jours. Délais de fabrication convenus à la commande.'
   );
 
-  // Preview Modal
+  // Validation & UI State
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // Auto-save draft
+  useEffect(() => {
+    saveDraftQuote({
+      editingQuoteId: editingQuote?.id,
+      quoteNumber,
+      createdAt,
+      validUntil,
+      status,
+      customer,
+      projectTitle,
+      projectDescription,
+      detailLevel,
+      lineItems,
+      discountPercent,
+      depositConfig,
+      paymentTerms,
+      notes,
+      calculationInput: editingQuote?.calculationInput || fromCalculation?.input,
+      calculationResult: editingQuote?.calculationResult || fromCalculation?.result,
+      updatedAt: new Date().toISOString(),
+    });
+  }, [
+    editingQuote,
+    quoteNumber,
+    createdAt,
+    validUntil,
+    status,
+    customer,
+    projectTitle,
+    projectDescription,
+    detailLevel,
+    lineItems,
+    discountPercent,
+    depositConfig,
+    paymentTerms,
+    notes,
+    fromCalculation,
+  ]);
 
   // Subtotal & Financials
   const subtotal = lineItems.reduce((sum, item) => sum + (item.total || 0), 0);
@@ -211,21 +281,27 @@ export function QuoteBuilder({
     setLineItems((prev) => prev.filter((item) => item.id !== id));
   };
 
-  // Convert calculation items into detailed breakdown
+  // Convert calculation items into detailed breakdown with proportional markup on all components
   const handlePopulateDetailedFromCalculation = () => {
-    if (!fromCalculation) return;
-    const { input, result } = fromCalculation;
+    const calc = fromCalculation || (editingQuote?.calculationInput && editingQuote?.calculationResult ? {
+      input: editingQuote.calculationInput,
+      result: editingQuote.calculationResult,
+    } : null);
+
+    if (!calc) return;
+    const { input, result } = calc;
 
     const items: QuoteLineItem[] = [];
+    const markupFactor = result.totalCost > 0 ? result.roundedSellingPrice / result.totalCost : 1.25;
 
-    // Materials
+    // 1. Materials
     input.materials.forEach((m) => {
-      // Calculate unit price reflecting margin
-      const markupFactor = result.totalCost > 0 ? result.roundedSellingPrice / result.totalCost : 1.25;
-      const clientPrice = Math.round(m.unitPrice * markupFactor);
+      // Direct raw unit cost with waste factored in
+      const effectiveUnitCost = m.unitPrice * (1 + (input.wastePercent || 0) / 100);
+      const clientPrice = Math.round(effectiveUnitCost * markupFactor);
       items.push({
         id: generateId(),
-        description: `Fourniture : ${m.name}`,
+        description: `Fourniture : ${m.name || 'Matériau'}`,
         quantity: m.quantity,
         unit: m.unit,
         unitPrice: clientPrice,
@@ -234,14 +310,12 @@ export function QuoteBuilder({
       });
     });
 
-    // Labor / Fabrication
+    // 2. Labor / Fabrication
     if (result.laborCost > 0) {
-      const laborClientPrice = Math.round(
-        result.laborCost * (result.totalCost > 0 ? result.roundedSellingPrice / result.totalCost : 1.25)
-      );
+      const laborClientPrice = Math.round(result.laborCost * markupFactor);
       items.push({
         id: generateId(),
-        description: 'Façonnage, soudure et montage en atelier',
+        description: 'Façonnage, assemblage et fabrication en atelier',
         quantity: 1,
         unit: 'forfait',
         unitPrice: laborClientPrice,
@@ -250,20 +324,24 @@ export function QuoteBuilder({
       });
     }
 
-    // Other costs / Installation
-    if (result.otherCostsTotal > 0) {
+    // 3. Other costs / Installation & Atelier overhead
+    const extraCostsTotal = (result.otherCostsTotal || 0) + (result.overheadCost || 0);
+    if (extraCostsTotal > 0) {
+      const extraClientPrice = Math.round(extraCostsTotal * markupFactor);
       items.push({
         id: generateId(),
-        description: 'Transport, quincaillerie et pose sur site',
+        description: 'Transport, quincaillerie annexe et installation sur site',
         quantity: 1,
         unit: 'forfait',
-        unitPrice: result.otherCostsTotal,
-        total: result.otherCostsTotal,
+        unitPrice: extraClientPrice,
+        total: extraClientPrice,
         itemType: 'other',
       });
     }
 
-    setLineItems(items);
+    if (items.length > 0) {
+      setLineItems(items);
+    }
   };
 
   // Build current quote object
@@ -323,27 +401,146 @@ export function QuoteBuilder({
   };
 
   const handleSave = () => {
+    // 1. Validate Project Title
     if (!projectTitle.trim()) {
-      alert('Veuillez saisir un intitulé pour le projet.');
+      setErrorMessage('Veuillez saisir un intitulé pour le projet.');
+      showError('Veuillez renseigner un intitulé pour le projet.');
+      focusAndScrollToField('quote-project-title');
       return;
     }
+
+    // 2. Validate Customer Name
+    if (!customer.name.trim()) {
+      setErrorMessage('Veuillez renseigner le nom ou l\'entreprise du client.');
+      showError('Veuillez renseigner le nom ou l\'entreprise du client.');
+      focusAndScrollToField('quote-customer-name');
+      return;
+    }
+
+    // 3. Validate Line Items
+    if (lineItems.length === 0) {
+      setErrorMessage('Veuillez ajouter au moins une ligne de prestation.');
+      showError('Veuillez ajouter au moins une ligne de prestation.');
+      return;
+    }
+
+    for (const item of lineItems) {
+      if (!item.description.trim()) {
+        setErrorMessage('Veuillez renseigner la désignation de la prestation.');
+        showError('Veuillez renseigner la désignation de la prestation.');
+        focusAndScrollToField(`quote-line-desc-${item.id}`);
+        return;
+      }
+      if (item.quantity <= 0) {
+        setErrorMessage('La quantité de la prestation doit être supérieure à 0.');
+        showError('La quantité de la prestation doit être supérieure à 0.');
+        focusAndScrollToField(`quote-line-qty-${item.id}`);
+        return;
+      }
+      if (item.unitPrice < 0) {
+        setErrorMessage('Le prix unitaire d\'une prestation ne peut pas être négatif.');
+        showError('Le prix unitaire d\'une prestation ne peut pas être négatif.');
+        focusAndScrollToField(`quote-line-price-${item.id}`);
+        return;
+      }
+    }
+
+    // 4. Validate Discount
+    if (discountPercent < 0 || discountPercent > 100) {
+      setErrorMessage('Le pourcentage de remise doit être compris entre 0% et 100%.');
+      showError('Le pourcentage de remise doit être compris entre 0% et 100%.');
+      focusAndScrollToField('quote-discount-percent');
+      return;
+    }
+
+    // 5. Validate Deposit
+    if (depositConfig.type === 'percent' && (depositConfig.value < 0 || depositConfig.value > 100)) {
+      setErrorMessage('Le pourcentage d\'acompte doit être compris entre 0% et 100%.');
+      showError('Le pourcentage d\'acompte doit être compris entre 0% et 100%.');
+      focusAndScrollToField('quote-deposit-value');
+      return;
+    }
+
+    setErrorMessage(null);
     const quote = buildCurrentQuote();
     onSaveQuote(quote);
+    clearDraftQuote();
+    clearDraftCalculation();
     setSaveSuccess(true);
+    showSuccess(`✓ Devis N° ${quote.quoteNumber} enregistré avec succès.`);
     setTimeout(() => setSaveSuccess(false), 2500);
+  };
+
+  const handleResetDraft = () => {
+    if (window.confirm('Voulez-vous effacer ce brouillon et réinitialiser les champs ?')) {
+      clearDraftQuote();
+      if (editingQuote) {
+        setCustomer(editingQuote.customer);
+        setProjectTitle(editingQuote.projectTitle);
+        setProjectDescription(editingQuote.projectDescription || '');
+        setLineItems(editingQuote.lineItems);
+        setDiscountPercent(editingQuote.discountPercent || 0);
+        setDepositConfig(editingQuote.depositConfig);
+        setPaymentTerms(editingQuote.paymentTerms || profile.defaultPaymentTerms || '');
+        setNotes(editingQuote.notes || profile.footerNotes || '');
+        setStatus(editingQuote.status);
+      } else {
+        setCustomer({ name: '', phone: '', email: '', address: '', city: profile.city || '' });
+        setProjectTitle('Fabrication et pose sur mesure');
+        setProjectDescription('');
+        setLineItems([
+          {
+            id: generateId(),
+            description: 'Fabrication métallique sur mesure',
+            quantity: 1,
+            unit: 'forfait',
+            unitPrice: 50000,
+            total: 50000,
+          },
+        ]);
+        setDiscountPercent(0);
+        setDepositConfig({ type: 'percent', value: 40 });
+        setPaymentTerms(profile.defaultPaymentTerms || 'Acompte de 40% à la commande, solde à la livraison.');
+        setNotes(profile.footerNotes || 'Devis valable 30 jours. Délais de fabrication convenus à la commande.');
+        setStatus('Brouillon');
+      }
+      showInfo('Brouillon de devis réinitialisé.');
+    }
   };
 
   const currentQuote = buildCurrentQuote();
 
+  const handleReturnToCalculation = () => {
+    if (onBackToCalculation) {
+      onBackToCalculation(currentQuote);
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-32 md:pb-12 animate-in fade-in duration-200">
+      {/* Validation Error Banner */}
+      {errorMessage && (
+        <div className="mb-4 p-3.5 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between gap-3 text-red-900 text-xs shadow-2xs">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+            <span className="font-bold">{errorMessage}</span>
+          </div>
+          <button
+            onClick={() => setErrorMessage(null)}
+            className="text-xs font-bold text-red-700 hover:text-red-950 underline"
+          >
+            Fermer
+          </button>
+        </div>
+      )}
+
       {/* Header Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <div className="flex items-center gap-3">
           <button
             onClick={onCancel}
             className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
-            title="Retour"
+            title="Retour à l'historique"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
@@ -360,6 +557,27 @@ export function QuoteBuilder({
 
         {/* Action Buttons */}
         <div className="flex items-center gap-2 flex-wrap">
+          {/* Persistent Link Back to Calculator */}
+          {(fromCalculation || editingQuote?.calculationInput || onBackToCalculation) && (
+            <button
+              onClick={handleReturnToCalculation}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-teal-900 bg-teal-50 border border-teal-300 rounded-lg hover:bg-teal-100 transition-colors shadow-2xs"
+              title="Ouvrir les coûts et la marge de ce devis dans le calculateur"
+            >
+              <Calculator className="w-3.5 h-3.5 text-teal-700" />
+              <span>Retour au calcul</span>
+            </button>
+          )}
+
+          <button
+            onClick={handleResetDraft}
+            className="inline-flex items-center gap-1 px-2.5 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors border border-transparent"
+            title="Effacer le brouillon en cours et réinitialiser"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span className="hidden xl:inline">Réinitialiser</span>
+          </button>
+
           <button
             onClick={() => setShowPreviewModal(true)}
             className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors shadow-2xs"
@@ -406,10 +624,11 @@ export function QuoteBuilder({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">
+                <label htmlFor="quote-customer-name" className="font-semibold text-slate-700 block mb-1">
                   Nom ou Entreprise du client *
                 </label>
                 <input
+                  id="quote-customer-name"
                   type="text"
                   value={customer.name}
                   onChange={(e) => setCustomer({ ...customer, name: e.target.value })}
@@ -419,10 +638,11 @@ export function QuoteBuilder({
               </div>
 
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">
+                <label htmlFor="quote-customer-phone" className="font-semibold text-slate-700 block mb-1">
                   Numéro de Téléphone / WhatsApp
                 </label>
                 <input
+                  id="quote-customer-phone"
                   type="tel"
                   value={customer.phone}
                   onChange={(e) => setCustomer({ ...customer, phone: e.target.value })}
@@ -432,10 +652,11 @@ export function QuoteBuilder({
               </div>
 
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">
+                <label htmlFor="quote-customer-email" className="font-semibold text-slate-700 block mb-1">
                   Email (Optionnel)
                 </label>
                 <input
+                  id="quote-customer-email"
                   type="email"
                   value={customer.email || ''}
                   onChange={(e) => setCustomer({ ...customer, email: e.target.value })}
@@ -445,10 +666,11 @@ export function QuoteBuilder({
               </div>
 
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">
+                <label htmlFor="quote-customer-address" className="font-semibold text-slate-700 block mb-1">
                   Adresse / Ville du chantier
                 </label>
                 <input
+                  id="quote-customer-address"
                   type="text"
                   value={customer.address || ''}
                   onChange={(e) => setCustomer({ ...customer, address: e.target.value })}
@@ -468,10 +690,11 @@ export function QuoteBuilder({
 
             <div className="space-y-3 text-xs">
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">
+                <label htmlFor="quote-project-title" className="font-semibold text-slate-700 block mb-1">
                   Intitulé du devis / Objet *
                 </label>
                 <input
+                  id="quote-project-title"
                   type="text"
                   value={projectTitle}
                   onChange={(e) => setProjectTitle(e.target.value)}
@@ -481,10 +704,11 @@ export function QuoteBuilder({
               </div>
 
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">
+                <label htmlFor="quote-project-description" className="font-semibold text-slate-700 block mb-1">
                   Description détaillée des travaux
                 </label>
                 <textarea
+                  id="quote-project-description"
                   rows={2}
                   value={projectDescription}
                   onChange={(e) => setProjectDescription(e.target.value)}
@@ -508,7 +732,7 @@ export function QuoteBuilder({
                 </p>
               </div>
 
-              {fromCalculation && (
+              {(fromCalculation || editingQuote?.calculationInput) && (
                 <button
                   onClick={handlePopulateDetailedFromCalculation}
                   className="inline-flex items-center gap-1 text-xs text-teal-700 hover:text-teal-900 font-semibold underline"
@@ -531,6 +755,7 @@ export function QuoteBuilder({
                       #{index + 1}
                     </span>
                     <input
+                      id={`quote-line-desc-${item.id}`}
                       type="text"
                       value={item.description}
                       onChange={(e) => handleUpdateLineItem(item.id, 'description', e.target.value)}
@@ -548,10 +773,11 @@ export function QuoteBuilder({
 
                   <div className="grid grid-cols-4 gap-2 items-center">
                     <div>
-                      <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">
+                      <label htmlFor={`quote-line-qty-${item.id}`} className="text-[10px] font-semibold text-slate-500 block mb-0.5">
                         Qté
                       </label>
                       <input
+                        id={`quote-line-qty-${item.id}`}
                         type="number"
                         min="0"
                         step="any"
@@ -562,10 +788,11 @@ export function QuoteBuilder({
                     </div>
 
                     <div>
-                      <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">
+                      <label htmlFor={`quote-line-unit-${item.id}`} className="text-[10px] font-semibold text-slate-500 block mb-0.5">
                         Unité
                       </label>
                       <input
+                        id={`quote-line-unit-${item.id}`}
                         type="text"
                         value={item.unit}
                         onChange={(e) => handleUpdateLineItem(item.id, 'unit', e.target.value)}
@@ -575,10 +802,11 @@ export function QuoteBuilder({
                     </div>
 
                     <div>
-                      <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">
+                      <label htmlFor={`quote-line-price-${item.id}`} className="text-[10px] font-semibold text-slate-500 block mb-0.5">
                         Prix Unit. ({currency})
                       </label>
                       <input
+                        id={`quote-line-price-${item.id}`}
                         type="number"
                         min="0"
                         step="100"
@@ -618,10 +846,11 @@ export function QuoteBuilder({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">
+                <label htmlFor="quote-payment-terms" className="font-semibold text-slate-700 block mb-1">
                   Conditions de règlement
                 </label>
                 <input
+                  id="quote-payment-terms"
                   type="text"
                   value={paymentTerms}
                   onChange={(e) => setPaymentTerms(e.target.value)}
@@ -631,10 +860,11 @@ export function QuoteBuilder({
               </div>
 
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">
+                <label htmlFor="quote-notes" className="font-semibold text-slate-700 block mb-1">
                   Notes & Garanties
                 </label>
                 <input
+                  id="quote-notes"
                   type="text"
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
@@ -655,8 +885,9 @@ export function QuoteBuilder({
             </h3>
 
             <div>
-              <label className="font-semibold text-slate-600 block mb-1">Numéro de Devis</label>
+              <label htmlFor="quote-number" className="font-semibold text-slate-600 block mb-1">Numéro de Devis</label>
               <input
+                id="quote-number"
                 type="text"
                 value={quoteNumber}
                 onChange={(e) => setQuoteNumber(e.target.value)}
@@ -666,8 +897,9 @@ export function QuoteBuilder({
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="font-semibold text-slate-600 block mb-1">Date d'émission</label>
+                <label htmlFor="quote-date-created" className="font-semibold text-slate-600 block mb-1">Date d'émission</label>
                 <input
+                  id="quote-date-created"
                   type="date"
                   value={createdAt}
                   onChange={(e) => setCreatedAt(e.target.value)}
@@ -676,8 +908,9 @@ export function QuoteBuilder({
               </div>
 
               <div>
-                <label className="font-semibold text-slate-600 block mb-1">Validité jusqu'au</label>
+                <label htmlFor="quote-date-valid" className="font-semibold text-slate-600 block mb-1">Validité jusqu'au</label>
                 <input
+                  id="quote-date-valid"
                   type="date"
                   value={validUntil}
                   onChange={(e) => setValidUntil(e.target.value)}
@@ -687,8 +920,9 @@ export function QuoteBuilder({
             </div>
 
             <div>
-              <label className="font-semibold text-slate-600 block mb-1">Statut du Devis</label>
+              <label htmlFor="quote-status" className="font-semibold text-slate-600 block mb-1">Statut du Devis</label>
               <select
+                id="quote-status"
                 value={status}
                 onChange={(e) => setStatus(e.target.value as QuoteStatus)}
                 className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded font-semibold text-slate-800"
@@ -717,9 +951,10 @@ export function QuoteBuilder({
 
             {/* Discount Option */}
             <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-800">
-              <span className="text-slate-400">Remise commerciale :</span>
+              <label htmlFor="quote-discount-percent" className="text-slate-400">Remise commerciale :</label>
               <div className="flex items-center gap-1 w-20">
                 <input
+                  id="quote-discount-percent"
                   type="number"
                   min="0"
                   max="100"
@@ -746,6 +981,7 @@ export function QuoteBuilder({
                 <span className="font-semibold text-slate-300">Acompte à la commande :</span>
                 <div className="flex items-center gap-1">
                   <select
+                    id="quote-deposit-type"
                     value={depositConfig.type}
                     onChange={(e) =>
                       setDepositConfig({
@@ -759,6 +995,7 @@ export function QuoteBuilder({
                     <option value="fixed">{currency}</option>
                   </select>
                   <input
+                    id="quote-deposit-value"
                     type="number"
                     min="0"
                     value={depositConfig.value}

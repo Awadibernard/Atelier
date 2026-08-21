@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   Calculator,
   FileText,
@@ -14,6 +15,7 @@ import {
   CheckCircle2,
   Crown,
   Zap,
+  Lock,
 } from 'lucide-react';
 import {
   AppTab,
@@ -26,6 +28,7 @@ import {
 import { formatCurrency, formatDateFrench } from '../utils/formatters';
 import { isPremium } from '../licensing/features';
 import { PremiumBadge } from './licensing/PremiumBadge';
+import { PremiumGateModal } from './licensing/PremiumGateModal';
 
 interface Props {
   profile: BusinessProfile;
@@ -57,6 +60,18 @@ export function HomeView({
   const currency = profile.currencySymbol || 'FCFA';
   const recentQuotes = quotes.slice(0, 4);
   const userIsPremium = isPremium(entitlement);
+
+  const [gateModalOpen, setGateModalOpen] = useState(false);
+  const [selectedPremiumTemplate, setSelectedPremiumTemplate] = useState<WorkshopTemplate | null>(null);
+
+  const handleAttemptUseTemplate = (tpl: WorkshopTemplate) => {
+    if (tpl.isPremiumOnly && !userIsPremium) {
+      setSelectedPremiumTemplate(tpl);
+      setGateModalOpen(true);
+      return;
+    }
+    onUseTemplate(tpl);
+  };
 
   // Quick workshop statistics
   const totalDevisAmount = quotes.reduce((sum, q) => sum + (q.finalTotal || 0), 0);
@@ -108,6 +123,32 @@ export function HomeView({
           </button>
         </div>
       </div>
+
+      {/* Non-blocking reminder to set up company profile if empty */}
+      {(!profile.name || !profile.phone || !profile.address) && (
+        <div className="bg-teal-50/80 border border-teal-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-2xs">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-teal-100 text-teal-800 flex items-center justify-center font-bold shrink-0">
+              <ShieldCheck className="w-5 h-5 text-teal-700" />
+            </div>
+            <div>
+              <span className="font-bold text-teal-950 block text-xs sm:text-sm">
+                Personnalisez vos devis avec les informations de votre entreprise
+              </span>
+              <p className="text-teal-800 text-[11px] sm:text-xs">
+                Pensez à renseigner le nom de votre atelier, vos numéros de contact et votre adresse dans les paramètres pour vos documents PDF et partages.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => onNavigate('settings')}
+            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-lg text-xs transition-all shadow-2xs shrink-0"
+          >
+            <span>Renseigner mes infos</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Free tier discovery strip */}
       {!userIsPremium && onOpenPremiumModal && (
@@ -205,33 +246,61 @@ export function HomeView({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {templates.slice(0, 4).map((tpl) => (
-              <div
-                key={tpl.id}
-                onClick={() => onUseTemplate(tpl)}
-                className="group p-4 bg-white hover:bg-teal-50/50 border border-slate-200 hover:border-teal-400 rounded-xl shadow-2xs cursor-pointer transition-all flex flex-col justify-between space-y-3"
-              >
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-600 group-hover:bg-teal-100 group-hover:text-teal-800">
-                      {tpl.category}
-                    </span>
-                    <span className="text-xs text-slate-400 font-mono">
-                      {tpl.targetMarginPercent}% marge
-                    </span>
+            {templates.slice(0, 4).map((tpl) => {
+              const isGated = tpl.isPremiumOnly && !userIsPremium;
+              return (
+                <div
+                  key={tpl.id}
+                  onClick={() => handleAttemptUseTemplate(tpl)}
+                  className={`group p-4 rounded-xl shadow-2xs cursor-pointer transition-all flex flex-col justify-between space-y-3 ${
+                    tpl.isPremiumOnly
+                      ? 'bg-gradient-to-br from-white to-amber-50/40 border border-amber-300 hover:border-amber-400'
+                      : tpl.isCustom
+                      ? 'bg-gradient-to-br from-white to-teal-50/30 border border-teal-200 hover:border-teal-400'
+                      : 'bg-white hover:bg-teal-50/50 border border-slate-200 hover:border-teal-400'
+                  }`}
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-600 group-hover:bg-teal-100 group-hover:text-teal-800">
+                          {tpl.category}
+                        </span>
+                        {tpl.isPremiumOnly && (
+                          <PremiumBadge label="Pro" size="xs" variant="gold" />
+                        )}
+                        {tpl.isCustom && (
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-teal-100 text-teal-800 font-bold">
+                            Perso
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-xs text-slate-400 font-mono">
+                        {tpl.targetMarginPercent}% marge
+                      </span>
+                    </div>
+                    <h3 className="font-bold text-sm text-slate-900 group-hover:text-teal-900 line-clamp-1 flex items-center gap-1">
+                      {tpl.name}
+                    </h3>
+                    <p className="text-xs text-slate-500 line-clamp-2">{tpl.description}</p>
                   </div>
-                  <h3 className="font-bold text-sm text-slate-900 group-hover:text-teal-900 line-clamp-1">
-                    {tpl.name}
-                  </h3>
-                  <p className="text-xs text-slate-500 line-clamp-2">{tpl.description}</p>
-                </div>
 
-                <div className="flex items-center justify-between text-xs text-teal-700 font-bold pt-1 border-t border-slate-100">
-                  <span>Charger ce calcul</span>
-                  <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1" />
+                  <div className="flex items-center justify-between text-xs font-bold pt-1 border-t border-slate-100">
+                    <span className={isGated ? 'text-amber-700 flex items-center gap-1' : 'text-teal-700'}>
+                      {isGated ? (
+                        <>
+                          <Lock className="w-3 h-3 text-amber-600" />
+                          <span>Modèle Pro</span>
+                        </>
+                      ) : (
+                        <span>Charger ce calcul</span>
+                      )}
+                    </span>
+                    <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1" />
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -305,6 +374,19 @@ export function HomeView({
           </div>
         </div>
       </div>
+      {/* Feature Gate Modal */}
+      <PremiumGateModal
+        isOpen={gateModalOpen}
+        onClose={() => setGateModalOpen(false)}
+        featureKey="advanced_templates"
+        customTitle={`Modèle Professionnel Spécialisé : ${selectedPremiumTemplate?.name || 'Ouvrage Pro'}`}
+        customDescription={`Ce modèle avancé (${selectedPremiumTemplate?.name}) est inclus dans la formule AtelierDevis Premium. Les modèles de base restent 100% gratuits.`}
+        onOpenPremiumInfo={() => {
+          if (onOpenPremiumModal) {
+            onOpenPremiumModal();
+          }
+        }}
+      />
     </div>
   );
 }

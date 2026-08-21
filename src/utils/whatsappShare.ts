@@ -9,15 +9,25 @@ export function buildWhatsAppMessage(quote: Quote, profile: BusinessProfile): st
 
   const lines: string[] = [
     `📄 *DEVIS N° ${quote.quoteNumber}*`,
-    `🏢 *${profile.name}*`,
-    `📅 Date : ${formatDateShort(quote.createdAt)} (Valable jusqu'au ${formatDateShort(quote.validUntil)})`,
-    ``,
-    `👤 *Client :* ${quote.customer.name || 'Client'}`,
-    `🔨 *Projet :* ${quote.projectTitle}`,
   ];
 
-  if (quote.projectDescription) {
-    lines.push(`📝 _${quote.projectDescription}_`);
+  if (profile.name && profile.name.trim()) {
+    lines.push(`🏢 *${profile.name.trim()}*`);
+  }
+
+  lines.push(
+    `📅 Date : ${formatDateShort(quote.createdAt)} (Valable jusqu'au ${formatDateShort(quote.validUntil)})`,
+    ``
+  );
+
+  if (quote.customer.name && quote.customer.name.trim()) {
+    lines.push(`👤 *Client :* ${quote.customer.name.trim()}`);
+  }
+
+  lines.push(`🔨 *Projet :* ${quote.projectTitle || 'Devis'}`);
+
+  if (quote.projectDescription && quote.projectDescription.trim()) {
+    lines.push(`📝 _${quote.projectDescription.trim()}_`);
   }
 
   lines.push(``, `📋 *Détail des prestations :*`);
@@ -37,14 +47,19 @@ export function buildWhatsAppMessage(quote: Quote, profile: BusinessProfile): st
     lines.push(`⏳ *Solde à la livraison :* ${formatCurrency(quote.balanceAmount, currency)}`);
   }
 
-  if (quote.paymentTerms) {
-    lines.push(``, `📌 *Modalités :* ${quote.paymentTerms}`);
+  if (quote.paymentTerms && quote.paymentTerms.trim()) {
+    lines.push(``, `📌 *Modalités :* ${quote.paymentTerms.trim()}`);
   }
 
-  lines.push(``);
-  lines.push(`📞 Contact : ${profile.phone || profile.whatsapp || ''}`);
-  if (profile.address) {
-    lines.push(`📍 Atelier : ${profile.address}, ${profile.city || ''}`);
+  const contactInfo = profile.phone?.trim() || profile.whatsapp?.trim();
+  if (contactInfo) {
+    lines.push(``);
+    lines.push(`📞 Contact : ${contactInfo}`);
+  }
+
+  const addressInfo = [profile.address?.trim(), profile.city?.trim()].filter(Boolean).join(', ');
+  if (addressInfo) {
+    lines.push(`📍 Atelier : ${addressInfo}`);
   }
 
   return lines.join('\n');
@@ -74,8 +89,11 @@ export async function shareNative(quote: Quote, profile: BusinessProfile): Promi
   const text = buildWhatsAppMessage(quote, profile);
   if (navigator.share) {
     try {
+      const shareTitle = profile.name && profile.name.trim()
+        ? `Devis ${quote.quoteNumber} - ${profile.name.trim()}`
+        : `Devis ${quote.quoteNumber}`;
       await navigator.share({
-        title: `Devis ${quote.quoteNumber} - ${profile.name}`,
+        title: shareTitle,
         text,
       });
       return true;
@@ -85,3 +103,4 @@ export async function shareNative(quote: Quote, profile: BusinessProfile): Promi
   }
   return false;
 }
+

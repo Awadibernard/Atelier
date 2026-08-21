@@ -8,6 +8,7 @@ import { MaterialLibrary } from './components/MaterialLibrary';
 import { TemplateLibrary } from './components/TemplateLibrary';
 import { SettingsView } from './components/SettingsView';
 import { PremiumPresentationModal } from './components/licensing/PremiumPresentationModal';
+import { NotificationProvider } from './context/NotificationContext';
 import {
   AppTab,
   BusinessProfile,
@@ -44,12 +45,21 @@ import {
   exportDatabaseJSON,
   importDatabaseJSON,
   resetToFactoryDefaults,
+  clearDraftCalculation,
+  clearDraftQuote,
 } from './storage/db';
 import { generateId } from './utils/formatters';
 
 export default function App() {
   // Navigation State
   const [activeTab, setActiveTab] = useState<AppTab>('home');
+
+  // PROBLEM 1: Automatically reset scroll position to top when navigating to a new view/section
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+    document.documentElement.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+    document.body.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+  }, [activeTab]);
 
   // Database States
   const [profile, setProfile] = useState<BusinessProfile>(() => getProfile());
@@ -89,18 +99,27 @@ export default function App() {
     setEntitlement(newEntitlement);
   };
 
-
   // Quick Action: New Quote from Scratch
   const handleStartNewQuote = () => {
     setEditingQuote(null);
     setCalculationForQuote(null);
-    setActiveTab('quote-builder');
+    setActiveTemplate(null);
+    clearDraftQuote();
+    clearDraftCalculation();
+    setActiveTab('calculator');
   };
 
   // Quick Action: Edit Quote
   const handleEditQuote = (quote: Quote) => {
     setEditingQuote(quote);
-    setCalculationForQuote(null);
+    if (quote.calculationInput && quote.calculationResult) {
+      setCalculationForQuote({
+        input: quote.calculationInput,
+        result: quote.calculationResult,
+      });
+    } else {
+      setCalculationForQuote(null);
+    }
     setActiveTab('quote-builder');
   };
 
@@ -123,6 +142,11 @@ export default function App() {
   // Save Quote
   const handleSaveQuote = (quote: Quote) => {
     saveQuote(quote);
+    clearDraftQuote();
+    clearDraftCalculation();
+    setCalculationForQuote(null);
+    setActiveTemplate(null);
+    setEditingQuote(null);
     refreshStorage();
   };
 
@@ -136,9 +160,43 @@ export default function App() {
     setActiveTab('quote-builder');
   };
 
-  // Quick Action: Use Template in Calculator
+  // Quick Action: Update calculation for existing quote
+  const handleUpdateQuoteCalculation = (
+    input: CalculationInput,
+    result: CalculationResult,
+    quote: Quote
+  ) => {
+    const updated: Quote = {
+      ...quote,
+      calculationInput: input,
+      calculationResult: result,
+    };
+    setEditingQuote(updated);
+    setCalculationForQuote({ input, result });
+    setActiveTab('quote-builder');
+  };
+
+  // Quick Action: Return from QuoteBuilder to Calculator
+  const handleBackToCalculation = (currentQuote: Quote) => {
+    setEditingQuote(currentQuote);
+    if (currentQuote.calculationInput && currentQuote.calculationResult) {
+      setCalculationForQuote({
+        input: currentQuote.calculationInput,
+        result: currentQuote.calculationResult,
+      });
+    }
+    setActiveTab('calculator');
+  };
+
+  // Quick Action: Use Template in Calculator (Creates a fresh new calculation session)
   const handleUseTemplateInCalculator = (template: WorkshopTemplate) => {
-    setActiveTemplate(template);
+    setEditingQuote(null);
+    setCalculationForQuote(null);
+    clearDraftCalculation();
+    setActiveTemplate({
+      ...template,
+      _sessionTimestamp: Date.now(),
+    });
     setActiveTab('calculator');
   };
 
@@ -218,132 +276,149 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-teal-500 selection:text-white">
-      {/* Top and Mobile Navigation */}
-      <Navbar
-        activeTab={activeTab}
-        onSelectTab={(tab) => {
-          if (tab === 'quote-builder') {
-            setEditingQuote(null);
-            setCalculationForQuote(null);
-          }
-          setActiveTab(tab);
-        }}
-        profile={profile}
-        entitlement={entitlement}
-        onOpenPremiumModal={() => setIsPremiumModalOpen(true)}
-      />
+    <NotificationProvider>
+      <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-teal-500 selection:text-white">
+        {/* Top and Mobile Navigation */}
+        <Navbar
+          activeTab={activeTab}
+          onSelectTab={(tab) => {
+            if (tab === 'quote-builder') {
+              setEditingQuote(null);
+              setCalculationForQuote(null);
+            }
+            setActiveTab(tab);
+          }}
+          profile={profile}
+          entitlement={entitlement}
+          onOpenPremiumModal={() => setIsPremiumModalOpen(true)}
+        />
 
-      {/* Main View Router */}
-      <main className="flex-1 w-full">
-        {activeTab === 'home' && (
-          <HomeView
-            profile={profile}
-            quotes={quotes}
-            recentCalculations={recentCalculations}
-            templates={templates}
-            onNavigate={(tab) => {
-              if (tab === 'quote-builder') {
+        {/* Main View Router */}
+        <main className="flex-1 w-full">
+          {activeTab === 'home' && (
+            <HomeView
+              profile={profile}
+              quotes={quotes}
+              recentCalculations={recentCalculations}
+              templates={templates}
+              onNavigate={(tab) => {
+                if (tab === 'quote-builder') {
+                  setEditingQuote(null);
+                  setCalculationForQuote(null);
+                }
+                setActiveTab(tab);
+              }}
+              onNewQuote={handleStartNewQuote}
+              onOpenCalculator={() => {
+                setActiveTemplate(null);
+                setActiveTab('calculator');
+              }}
+              onUseTemplate={handleUseTemplateInCalculator}
+              onSelectQuote={handleEditQuote}
+              entitlement={entitlement}
+              onOpenPremiumModal={() => setIsPremiumModalOpen(true)}
+            />
+          )}
+
+          {activeTab === 'calculator' && (
+            <QuickCalculator
+              profile={profile}
+              materialLibrary={materials}
+              laborLibrary={laborRates}
+              templates={templates}
+              initialCalculation={calculationForQuote?.input || editingQuote?.calculationInput}
+              initialTemplate={activeTemplate}
+              onConsumeTemplate={() => setActiveTemplate(null)}
+              editingQuote={editingQuote}
+              onGenerateQuote={handleGenerateQuoteFromCalc}
+              onUpdateQuoteCalculation={handleUpdateQuoteCalculation}
+              onCancelEditQuote={() => setActiveTab('quote-builder')}
+              onSaveCalculation={handleSaveCalculation}
+              onResetToNew={() => {
                 setEditingQuote(null);
                 setCalculationForQuote(null);
-              }
-              setActiveTab(tab);
-            }}
-            onNewQuote={handleStartNewQuote}
-            onOpenCalculator={() => {
-              setActiveTemplate(null);
-              setActiveTab('calculator');
-            }}
-            onUseTemplate={handleUseTemplateInCalculator}
-            onSelectQuote={handleEditQuote}
-            entitlement={entitlement}
-            onOpenPremiumModal={() => setIsPremiumModalOpen(true)}
-          />
-        )}
+                setActiveTemplate(null);
+              }}
+              onSaveTemplate={handleSaveTemplate}
+              entitlement={entitlement}
+              onOpenPremiumModal={() => setIsPremiumModalOpen(true)}
+            />
+          )}
 
-        {activeTab === 'calculator' && (
-          <QuickCalculator
-            profile={profile}
-            materialLibrary={materials}
-            laborLibrary={laborRates}
-            initialTemplate={activeTemplate}
-            onGenerateQuote={handleGenerateQuoteFromCalc}
-            onSaveCalculation={handleSaveCalculation}
-          />
-        )}
+          {activeTab === 'quotes' && (
+            <QuoteHistory
+              quotes={quotes}
+              profile={profile}
+              onEditQuote={handleEditQuote}
+              onDuplicateQuote={handleDuplicateQuote}
+              onDeleteQuote={handleDeleteQuote}
+              onNewQuote={handleStartNewQuote}
+              entitlement={entitlement}
+              onOpenPremiumModal={() => setIsPremiumModalOpen(true)}
+            />
+          )}
 
-        {activeTab === 'quotes' && (
-          <QuoteHistory
-            quotes={quotes}
-            profile={profile}
-            onEditQuote={handleEditQuote}
-            onDuplicateQuote={handleDuplicateQuote}
-            onDeleteQuote={handleDeleteQuote}
-            onNewQuote={handleStartNewQuote}
-            entitlement={entitlement}
-            onOpenPremiumModal={() => setIsPremiumModalOpen(true)}
-          />
-        )}
+          {activeTab === 'quote-builder' && (
+            <QuoteBuilder
+              profile={profile}
+              editingQuote={editingQuote}
+              fromCalculation={calculationForQuote}
+              onSaveQuote={(savedQuote) => {
+                handleSaveQuote(savedQuote);
+                setActiveTab('quotes');
+              }}
+              onCancel={() => setActiveTab('quotes')}
+              onBackToCalculation={handleBackToCalculation}
+              nextQuoteNumber={getNextQuoteNumber()}
+            />
+          )}
 
-        {activeTab === 'quote-builder' && (
-          <QuoteBuilder
-            profile={profile}
-            editingQuote={editingQuote}
-            fromCalculation={calculationForQuote}
-            onSaveQuote={(savedQuote) => {
-              handleSaveQuote(savedQuote);
-              setActiveTab('quotes');
-            }}
-            onCancel={() => setActiveTab('quotes')}
-            nextQuoteNumber={getNextQuoteNumber()}
-          />
-        )}
+          {activeTab === 'materials' && (
+            <MaterialLibrary
+              materials={materials}
+              laborRates={laborRates}
+              profile={profile}
+              onSaveMaterial={handleSaveMaterial}
+              onDeleteMaterial={handleDeleteMaterial}
+              onSaveLaborRate={handleSaveLaborRate}
+              onDeleteLaborRate={handleDeleteLaborRate}
+            />
+          )}
 
-        {activeTab === 'materials' && (
-          <MaterialLibrary
-            materials={materials}
-            laborRates={laborRates}
-            profile={profile}
-            onSaveMaterial={handleSaveMaterial}
-            onDeleteMaterial={handleDeleteMaterial}
-            onSaveLaborRate={handleSaveLaborRate}
-            onDeleteLaborRate={handleDeleteLaborRate}
-          />
-        )}
+          {activeTab === 'templates' && (
+            <TemplateLibrary
+              templates={templates}
+              profile={profile}
+              onUseTemplate={handleUseTemplateInCalculator}
+              onSaveTemplate={handleSaveTemplate}
+              onDeleteTemplate={handleDeleteTemplate}
+              entitlement={entitlement}
+              onOpenPremiumModal={() => setIsPremiumModalOpen(true)}
+            />
+          )}
 
-        {activeTab === 'templates' && (
-          <TemplateLibrary
-            templates={templates}
-            profile={profile}
-            onUseTemplate={handleUseTemplateInCalculator}
-            onSaveTemplate={handleSaveTemplate}
-            onDeleteTemplate={handleDeleteTemplate}
-            entitlement={entitlement}
-            onOpenPremiumModal={() => setIsPremiumModalOpen(true)}
-          />
-        )}
+          {activeTab === 'settings' && (
+            <SettingsView
+              profile={profile}
+              onSaveProfile={handleSaveProfile}
+              onExportData={handleExportData}
+              onImportData={handleImportData}
+              onResetData={handleResetData}
+              entitlement={entitlement}
+              onUpdateEntitlement={handleUpdateEntitlement}
+              onOpenPremiumModal={() => setIsPremiumModalOpen(true)}
+            />
+          )}
+        </main>
 
-        {activeTab === 'settings' && (
-          <SettingsView
-            profile={profile}
-            onSaveProfile={handleSaveProfile}
-            onExportData={handleExportData}
-            onImportData={handleImportData}
-            onResetData={handleResetData}
-            entitlement={entitlement}
-            onUpdateEntitlement={handleUpdateEntitlement}
-            onOpenPremiumModal={() => setIsPremiumModalOpen(true)}
-          />
-        )}
-      </main>
-
-      {/* Global Premium Presentation & License Activation Modal */}
-      <PremiumPresentationModal
-        isOpen={isPremiumModalOpen}
-        onClose={() => setIsPremiumModalOpen(false)}
-        entitlement={entitlement}
-        onUpdateEntitlement={handleUpdateEntitlement}
-      />
-    </div>
+        {/* Global Premium Presentation & License Activation Modal */}
+        <PremiumPresentationModal
+          isOpen={isPremiumModalOpen}
+          onClose={() => setIsPremiumModalOpen(false)}
+          entitlement={entitlement}
+          onUpdateEntitlement={handleUpdateEntitlement}
+        />
+      </div>
+    </NotificationProvider>
   );
 }

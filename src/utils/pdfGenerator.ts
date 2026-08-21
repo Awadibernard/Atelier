@@ -1,7 +1,7 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { BusinessProfile, Quote, UserEntitlement } from '../types';
-import { formatCurrency, formatDateFrench, formatDateShort } from './formatters';
+import { formatCurrency, formatDateShort } from './formatters';
 import { isPremium } from '../licensing/features';
 
 export function generateQuotePDF(
@@ -15,10 +15,9 @@ export function generateQuotePDF(
     format: 'a4',
   });
 
-
   const currency = profile.currencySymbol || 'FCFA';
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
+  const pageWidth = doc.internal.pageSize.getWidth(); // 210mm
+  const pageHeight = doc.internal.pageSize.getHeight(); // 297mm
   const margin = 15;
   let cursorY = margin;
 
@@ -31,46 +30,93 @@ export function generateQuotePDF(
   // 1. Header (Logo / Business name)
   const headerLeftX = margin;
   const headerRightX = pageWidth - margin;
+  const hasRealLogo = Boolean(profile.logoUrl && profile.logoUrl.startsWith('data:image'));
+  const hasBusinessName = Boolean(profile.name && profile.name.trim());
+  const businessName = profile.name ? profile.name.trim() : '';
 
-  // Check if logo exists
-  if (profile.logoUrl && profile.logoUrl.startsWith('data:image')) {
+  if (hasRealLogo) {
     try {
-      doc.addImage(profile.logoUrl, 'PNG', headerLeftX, cursorY, 28, 20);
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(16);
-      doc.setTextColor(...primaryColor);
-      doc.text(profile.name, headerLeftX + 32, cursorY + 7);
+      let drawLogoW = 22;
+      let drawLogoH = 22;
 
-      if (profile.tagline) {
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(9);
-        doc.setTextColor(...secondaryColor);
-        doc.text(profile.tagline, headerLeftX + 32, cursorY + 12);
+      // Extract image properties to prevent distortion and preserve exact aspect ratio
+      const imgProps = doc.getImageProperties(profile.logoUrl);
+      if (imgProps && imgProps.width > 0 && imgProps.height > 0) {
+        const aspect = imgProps.width / imgProps.height;
+        const maxBoxW = 32; // max width allowed in mm
+        const maxBoxH = 22; // max height allowed in mm
+
+        if (aspect > maxBoxW / maxBoxH) {
+          // Landscape / rectangular logo
+          drawLogoW = maxBoxW;
+          drawLogoH = maxBoxW / aspect;
+        } else {
+          // Circular mask (aspect === 1.0), square logo (1.0), or portrait logo
+          drawLogoH = maxBoxH;
+          drawLogoW = maxBoxH * aspect;
+        }
       }
-      cursorY += 24;
+
+      const imgFormat = profile.logoUrl.startsWith('data:image/jpeg') || profile.logoUrl.startsWith('data:image/jpg')
+        ? 'JPEG'
+        : 'PNG';
+
+      doc.addImage(profile.logoUrl, imgFormat, headerLeftX, cursorY, drawLogoW, drawLogoH);
+
+      const textStartX = headerLeftX + drawLogoW + 4;
+      if (hasBusinessName) {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(16);
+        doc.setTextColor(...primaryColor);
+        doc.text(businessName, textStartX, cursorY + 7);
+
+        if (profile.tagline && profile.tagline.trim()) {
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(9);
+          doc.setTextColor(...secondaryColor);
+          doc.text(profile.tagline.trim(), textStartX, cursorY + 12);
+        }
+      }
+      cursorY += Math.max(drawLogoH + 4, 24);
     } catch {
       // Fallback if image parsing fails
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(18);
-      doc.setTextColor(...primaryColor);
-      doc.text(profile.name, headerLeftX, cursorY + 6);
-      cursorY += 12;
+      if (hasBusinessName) {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(18);
+        doc.setTextColor(...primaryColor);
+        doc.text(businessName, headerLeftX, cursorY + 6);
+
+        if (profile.tagline && profile.tagline.trim()) {
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(9);
+          doc.setTextColor(...secondaryColor);
+          doc.text(profile.tagline.trim(), headerLeftX, cursorY + 12);
+          cursorY += 16;
+        } else {
+          cursorY += 12;
+        }
+      } else {
+        cursorY += 8;
+      }
     }
-  } else {
+  } else if (hasBusinessName) {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(18);
     doc.setTextColor(...primaryColor);
-    doc.text(profile.name, headerLeftX, cursorY + 6);
+    doc.text(businessName, headerLeftX, cursorY + 6);
 
-    if (profile.tagline) {
+    if (profile.tagline && profile.tagline.trim()) {
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9);
       doc.setTextColor(...secondaryColor);
-      doc.text(profile.tagline, headerLeftX, cursorY + 12);
+      doc.text(profile.tagline.trim(), headerLeftX, cursorY + 12);
       cursorY += 16;
     } else {
       cursorY += 12;
     }
+  } else {
+    // No logo and no company name: keep header space compact
+    cursorY += 6;
   }
 
   // Quote Title & Meta Box (Right aligned)
@@ -95,12 +141,13 @@ export function generateQuotePDF(
 
   const colWidth = (pageWidth - margin * 2 - 10) / 2;
   const rightColX = margin + colWidth + 10;
+  const boxHeight = 34;
 
   // Workshop details box
   doc.setFillColor(...lightBg);
-  doc.roundedRect(margin, cursorY, colWidth, 32, 2, 2, 'F');
+  doc.roundedRect(margin, cursorY, colWidth, boxHeight, 2, 2, 'F');
   doc.setDrawColor(226, 232, 240);
-  doc.roundedRect(margin, cursorY, colWidth, 32, 2, 2, 'S');
+  doc.roundedRect(margin, cursorY, colWidth, boxHeight, 2, 2, 'S');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
@@ -111,55 +158,92 @@ export function generateQuotePDF(
   doc.setFontSize(8.5);
   doc.setTextColor(...secondaryColor);
   let wsLineY = cursorY + 11;
-  if (profile.phone) {
-    doc.text(`Tél : ${profile.phone}`, margin + 4, wsLineY);
+
+  if (hasBusinessName) {
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...primaryColor);
+    doc.text(businessName, margin + 4, wsLineY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(...secondaryColor);
     wsLineY += 4.5;
   }
-  if (profile.whatsapp) {
-    doc.text(`WhatsApp : ${profile.whatsapp}`, margin + 4, wsLineY);
+
+  if (profile.phone && profile.phone.trim()) {
+    doc.text(`Tél : ${profile.phone.trim()}`, margin + 4, wsLineY);
     wsLineY += 4.5;
   }
-  if (profile.address || profile.city) {
-    doc.text(`${profile.address || ''} ${profile.city ? `- ${profile.city}` : ''}`, margin + 4, wsLineY);
+
+  if (profile.whatsapp && profile.whatsapp.trim()) {
+    doc.text(`WhatsApp : ${profile.whatsapp.trim()}`, margin + 4, wsLineY);
     wsLineY += 4.5;
   }
-  if (profile.taxId) {
-    doc.text(`RCCM / NIF : ${profile.taxId}`, margin + 4, wsLineY);
+
+  if (profile.email && profile.email.trim()) {
+    doc.text(`Email : ${profile.email.trim()}`, margin + 4, wsLineY);
+    wsLineY += 4.5;
+  }
+
+  const workshopAddress = [
+    profile.address?.trim(),
+    profile.city?.trim(),
+    profile.country?.trim(),
+  ].filter(Boolean).join(', ');
+
+  if (workshopAddress) {
+    doc.text(workshopAddress, margin + 4, wsLineY);
+    wsLineY += 4.5;
+  }
+
+  if (profile.taxId && profile.taxId.trim()) {
+    doc.text(`RCCM / NIF : ${profile.taxId.trim()}`, margin + 4, wsLineY);
   }
 
   // Customer details box
   doc.setFillColor(...lightBg);
-  doc.roundedRect(rightColX, cursorY, colWidth, 32, 2, 2, 'F');
+  doc.roundedRect(rightColX, cursorY, colWidth, boxHeight, 2, 2, 'F');
   doc.setDrawColor(226, 232, 240);
-  doc.roundedRect(rightColX, cursorY, colWidth, 32, 2, 2, 'S');
+  doc.roundedRect(rightColX, cursorY, colWidth, boxHeight, 2, 2, 'S');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
   doc.setTextColor(...primaryColor);
   doc.text('DEVIS POUR :', rightColX + 4, cursorY + 6);
 
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
-  doc.setTextColor(...primaryColor);
-  doc.text(quote.customer.name || 'Client', rightColX + 4, cursorY + 12);
+  let custLineY = cursorY + 11;
+  const clientName = quote.customer.name ? quote.customer.name.trim() : '';
+
+  if (clientName) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.setTextColor(...primaryColor);
+    doc.text(clientName, rightColX + 4, custLineY);
+    custLineY += 5;
+  }
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
   doc.setTextColor(...secondaryColor);
-  let custLineY = cursorY + 17;
-  if (quote.customer.phone) {
-    doc.text(`Tél : ${quote.customer.phone}`, rightColX + 4, custLineY);
+
+  if (quote.customer.phone && quote.customer.phone.trim()) {
+    doc.text(`Tél : ${quote.customer.phone.trim()}`, rightColX + 4, custLineY);
     custLineY += 4.5;
-  }
-  if (quote.customer.email) {
-    doc.text(`Email : ${quote.customer.email}`, rightColX + 4, custLineY);
-    custLineY += 4.5;
-  }
-  if (quote.customer.address || quote.customer.city) {
-    doc.text(`${quote.customer.address || ''} ${quote.customer.city ? `- ${quote.customer.city}` : ''}`, rightColX + 4, custLineY);
   }
 
-  cursorY += 38;
+  if (quote.customer.email && quote.customer.email.trim()) {
+    doc.text(`Email : ${quote.customer.email.trim()}`, rightColX + 4, custLineY);
+    custLineY += 4.5;
+  }
+
+  const clientAddress = [
+    quote.customer.address?.trim(),
+    quote.customer.city?.trim(),
+  ].filter(Boolean).join(' - ');
+
+  if (clientAddress) {
+    doc.text(clientAddress, rightColX + 4, custLineY);
+  }
+
+  cursorY += boxHeight + 6;
 
   // 3. Project Overview Banner
   doc.setFillColor(241, 245, 249);
@@ -167,13 +251,14 @@ export function generateQuotePDF(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10);
   doc.setTextColor(...primaryColor);
-  doc.text(`PROJET : ${quote.projectTitle.toUpperCase()}`, margin + 4, cursorY + 6);
+  const projectTitleText = quote.projectTitle ? quote.projectTitle.trim().toUpperCase() : 'DEVIS';
+  doc.text(`OBJET : ${projectTitleText}`, margin + 4, cursorY + 6);
 
-  if (quote.projectDescription) {
+  if (quote.projectDescription && quote.projectDescription.trim()) {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.5);
     doc.setTextColor(...secondaryColor);
-    const splitDesc = doc.splitTextToSize(quote.projectDescription, pageWidth - margin * 2 - 8);
+    const splitDesc = doc.splitTextToSize(quote.projectDescription.trim(), pageWidth - margin * 2 - 8);
     doc.text(splitDesc[0] || '', margin + 4, cursorY + 10.5);
   }
 
@@ -181,11 +266,11 @@ export function generateQuotePDF(
 
   // 4. Line Items Table
   const tableHeaders = [['Description / Désignation', 'Qté', 'Unité', `Prix Unit. (${currency})`, `Total (${currency})`]];
-  
+
   const tableData = quote.lineItems.map((item) => [
-    item.description,
+    item.description || '',
     item.quantity.toString(),
-    item.unit,
+    item.unit || '',
     formatCurrency(item.unitPrice, '', false).trim(),
     formatCurrency(item.total, '', false).trim(),
   ]);
@@ -235,7 +320,7 @@ export function generateQuotePDF(
   const notesBoxWidth = summaryBoxX - margin - 8;
 
   // Notes & Conditions (Left)
-  if (quote.notes || quote.paymentTerms || profile.footerNotes) {
+  if ((quote.notes && quote.notes.trim()) || (quote.paymentTerms && quote.paymentTerms.trim()) || (profile.footerNotes && profile.footerNotes.trim())) {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9);
     doc.setTextColor(...primaryColor);
@@ -246,17 +331,17 @@ export function generateQuotePDF(
     doc.setTextColor(...secondaryColor);
     let noteY = cursorY + 9;
 
-    if (quote.paymentTerms) {
-      doc.text(`• Règlement : ${quote.paymentTerms}`, margin, noteY);
+    if (quote.paymentTerms && quote.paymentTerms.trim()) {
+      doc.text(`• Règlement : ${quote.paymentTerms.trim()}`, margin, noteY);
       noteY += 4.5;
     }
-    if (quote.notes) {
-      const splitNotes = doc.splitTextToSize(`• Note : ${quote.notes}`, notesBoxWidth);
+    if (quote.notes && quote.notes.trim()) {
+      const splitNotes = doc.splitTextToSize(`• Note : ${quote.notes.trim()}`, notesBoxWidth);
       doc.text(splitNotes, margin, noteY);
       noteY += splitNotes.length * 4;
     }
-    if (profile.footerNotes) {
-      const splitFooter = doc.splitTextToSize(`• ${profile.footerNotes}`, notesBoxWidth);
+    if (profile.footerNotes && profile.footerNotes.trim()) {
+      const splitFooter = doc.splitTextToSize(`• ${profile.footerNotes.trim()}`, notesBoxWidth);
       doc.text(splitFooter, margin, noteY);
     }
   }
@@ -316,7 +401,8 @@ export function generateQuotePDF(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
   doc.setTextColor(...primaryColor);
-  doc.text(`Pour ${profile.name}`, margin, sigBoxY);
+  const sigWorkshopLabel = hasBusinessName ? `Pour ${businessName}` : "Pour l'Émetteur";
+  doc.text(sigWorkshopLabel, margin, sigBoxY);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
   doc.setTextColor(...secondaryColor);
@@ -342,15 +428,13 @@ export function generateQuotePDF(
   doc.setFontSize(6.5);
   doc.setTextColor(148, 163, 184); // slate-400
   if (userIsPrem) {
-    doc.text(
-      `Document professionnel officiel • ${profile.name || 'Atelier de Fabrication'}`,
-      pageWidth / 2,
-      pageHeight - 6,
-      { align: 'center' }
-    );
+    const footerText = hasBusinessName
+      ? `Document professionnel officiel • ${businessName}`
+      : 'Document professionnel officiel';
+    doc.text(footerText, pageWidth / 2, pageHeight - 6, { align: 'center' });
   } else {
     doc.text(
-      `Document généré avec AtelierDevis (Version Gratuite) • www.atelierdevis.app`,
+      `Document généré avec AtelierDevis • www.atelierdevis.app`,
       pageWidth / 2,
       pageHeight - 6,
       { align: 'center' }
@@ -366,7 +450,8 @@ export function downloadQuotePDF(
   entitlement?: UserEntitlement
 ): void {
   const doc = generateQuotePDF(quote, profile, entitlement);
-  const safeCustomer = (quote.customer.name || 'client').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const rawCustomer = quote.customer.name?.trim() || 'client';
+  const safeCustomer = rawCustomer.replace(/[^a-zA-Z0-9_-]/g, '_');
   const filename = `Devis_${quote.quoteNumber}_${safeCustomer}.pdf`;
   doc.save(filename);
 }
@@ -376,9 +461,46 @@ export function printQuotePDF(
   profile: BusinessProfile,
   entitlement?: UserEntitlement
 ): void {
-  const doc = generateQuotePDF(quote, profile, entitlement);
-  doc.autoPrint();
-  const blobUrl = doc.output('bloburl');
-  window.open(blobUrl, '_blank');
+  try {
+    const doc = generateQuotePDF(quote, profile, entitlement);
+    doc.autoPrint();
+    const blob = doc.output('blob');
+    const blobUrl = URL.createObjectURL(blob);
+
+    // Create a hidden iframe for direct printing
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    iframe.style.visibility = 'hidden';
+    iframe.src = blobUrl;
+    document.body.appendChild(iframe);
+
+    iframe.onload = () => {
+      setTimeout(() => {
+        try {
+          iframe.contentWindow?.focus();
+          iframe.contentWindow?.print();
+        } catch {
+          // Fallback if iframe print restricted
+          window.open(blobUrl, '_blank');
+        } finally {
+          setTimeout(() => {
+            if (document.body.contains(iframe)) {
+              document.body.removeChild(iframe);
+            }
+            URL.revokeObjectURL(blobUrl);
+          }, 60000);
+        }
+      }, 300);
+    };
+  } catch (err) {
+    console.error('PDF Print error:', err);
+    throw err;
+  }
 }
+
 

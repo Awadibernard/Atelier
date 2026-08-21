@@ -76,6 +76,7 @@ export interface CalculationInput {
   pricingMode: PricingMode;
   targetProfitPercent: number; // e.g. 25 for 25% margin or markup
   roundingStep: RoundingStep;
+  templateId?: string;
 }
 
 export interface CalculationResult {
@@ -113,6 +114,26 @@ export interface QuoteLineItem {
 export interface DepositConfig {
   type: 'percent' | 'fixed';
   value: number; // e.g. 40 for 40% or 50000 for 50 000 FCFA
+}
+
+export interface DraftQuoteState {
+  editingQuoteId?: string;
+  quoteNumber: string;
+  createdAt: string;
+  validUntil: string;
+  status: QuoteStatus;
+  customer: CustomerInfo;
+  projectTitle: string;
+  projectDescription?: string;
+  detailLevel: ClientDetailLevel;
+  lineItems: QuoteLineItem[];
+  discountPercent: number;
+  depositConfig: DepositConfig;
+  paymentTerms: string;
+  notes: string;
+  calculationInput?: CalculationInput;
+  calculationResult?: CalculationResult;
+  updatedAt?: string;
 }
 
 export interface CustomerInfo {
@@ -204,11 +225,19 @@ export interface WorkshopTemplate {
   description: string;
   icon?: string;
   isPremiumOnly?: boolean;
+  isCustom?: boolean;
   defaultMaterials: Array<Omit<MaterialItem, 'id'>>;
   defaultLabor: Array<Omit<LaborItem, 'id'>>;
   defaultOtherCosts: Array<Omit<OtherCostItem, 'id'>>;
   wastePercent: number;
   targetMarginPercent: number;
+  overheadType?: OverheadType;
+  overheadValue?: number;
+  pricingMode?: PricingMode;
+  roundingStep?: RoundingStep;
+  createdAt?: string;
+  updatedAt?: string;
+  _sessionTimestamp?: number;
 }
 
 export interface AppBackupData {

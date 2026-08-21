@@ -5,19 +5,27 @@
 export function formatCurrency(
   amount: number | undefined | null,
   symbol: string = 'FCFA',
-  includeDecimals: boolean = false
+  includeDecimals?: boolean
 ): string {
   if (amount === undefined || amount === null || isNaN(amount)) {
     return `0 ${symbol}`;
   }
 
-  const rounded = includeDecimals
+  // If includeDecimals is unspecified, automatically include decimals if the number has a fractional part
+  const hasDecimals = Math.abs(amount % 1) > 0.0001;
+  const shouldIncludeDecimals = includeDecimals !== undefined ? includeDecimals : hasDecimals;
+
+  const rounded = shouldIncludeDecimals
     ? Math.round(amount * 100) / 100
     : Math.round(amount);
 
   // Group thousands with spaces
   const parts = rounded.toString().split('.');
   parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+
+  if (parts.length > 1 && shouldIncludeDecimals) {
+    parts[1] = parts[1].padEnd(2, '0').slice(0, 2);
+  }
 
   const formattedNum = parts.join(',');
   return `${formattedNum} ${symbol}`;

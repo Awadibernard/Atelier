@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, type FormEvent } from 'react';
 import {
   Plus,
   Trash2,
@@ -6,6 +6,7 @@ import {
   HelpCircle,
   FileText,
   BookmarkCheck,
+  BookmarkPlus,
   AlertCircle,
   RefreshCw,
   Sparkles,
@@ -14,6 +15,13 @@ import {
   Coins,
   ArrowRight,
   CheckCircle,
+  Check,
+  ArrowLeft,
+  RotateCcw,
+  X,
+  AlertTriangle,
+  Crown,
+  Lock,
 } from 'lucide-react';
 import {
   CalculationInput,
@@ -28,10 +36,18 @@ import {
   RoundingStep,
   WorkshopTemplate,
   BusinessProfile,
+  Quote,
+  UserEntitlement,
 } from '../types';
 import { calculateQuote, sanitizeNumber } from '../engine/calculator';
 import { formatCurrency, formatPercent, generateId } from '../utils/formatters';
+import { isPremium } from '../licensing/features';
+import { PremiumGateModal } from './licensing/PremiumGateModal';
 import { CalculationBreakdownModal } from './CalculationBreakdownModal';
+import { NumberStepper } from './NumberStepper';
+import { getDraftCalculation, saveDraftCalculation, clearDraftCalculation, clearDraftQuote } from '../storage/db';
+import { useNotification } from '../context/NotificationContext';
+import { focusAndScrollToField } from '../utils/formValidation';
 
 interface Props {
   profile: BusinessProfile;
@@ -42,10 +58,18 @@ interface Props {
   templates?: WorkshopTemplate[];
   initialCalculation?: CalculationInput;
   initialTemplate?: WorkshopTemplate | null;
+  onConsumeTemplate?: () => void;
+  editingQuote?: Quote | null;
   onConvertToQuote?: (input: CalculationInput, result: CalculationResult) => void;
   onGenerateQuote?: (input: CalculationInput, result: CalculationResult) => void;
+  onUpdateQuoteCalculation?: (input: CalculationInput, result: CalculationResult, quote: Quote) => void;
+  onCancelEditQuote?: () => void;
   onOpenTemplates?: () => void;
   onSaveCalculation?: (title: string, input: CalculationInput, result: CalculationResult) => void;
+  onResetToNew?: () => void;
+  onSaveTemplate?: (template: Omit<WorkshopTemplate, 'id'> & { id?: string }) => void;
+  entitlement?: UserEntitlement;
+  onOpenPremiumModal?: () => void;
 }
 
 const COMMON_UNITS = [
@@ -70,78 +94,163 @@ export function QuickCalculator({
   templates = [],
   initialCalculation,
   initialTemplate,
+  onConsumeTemplate,
+  editingQuote,
   onConvertToQuote,
   onGenerateQuote,
+  onUpdateQuoteCalculation,
+  onCancelEditQuote,
   onOpenTemplates,
   onSaveCalculation,
+  onResetToNew,
+  onSaveTemplate,
+  entitlement,
+  onOpenPremiumModal,
 }: Props) {
   const allMaterials = materialsLibrary || materialLibrary || [];
   const allLaborRates = laborRatesLibrary || laborLibrary || [];
   const handleQuoteClick = onGenerateQuote || onConvertToQuote;
   const currency = profile.currencySymbol || 'FCFA';
 
-  // State
-  const [materials, setMaterials] = useState<MaterialItem[]>(
-    initialCalculation?.materials || [
-      { id: generateId(), name: 'Tube carré 40×40', quantity: 12, unit: 'm', unitPrice: 2000 },
-      { id: generateId(), name: 'Tôle plane 2mm', quantity: 2, unit: 'm2', unitPrice: 5000 },
-    ]
-  );
+  // Strict Restoration Priority:
+  // Priority 1: initialCalculation (explicit source calculation passed as prop)
+  // Priority 2: editingQuote?.calculationInput
+  // Priority 3: stored calculation draft from getDraftCalculation()
+  // Priority 4: if initialTemplate was explicitly loaded (draft cleared)
+  const draft = useMemo(() => {
+    if (initialCalculation) return initialCalculation;
+    if (editingQuote?.calculationInput) return editingQuote.calculationInput;
+    const stored = getDraftCalculation();
+    if (stored) return stored;
+    if (initialTemplate) {
+      return {
+        materials: initialTemplate.defaultMaterials.map((m) => ({ ...m, id: generateId() })),
+        wastePercent: initialTemplate.wastePercent ?? profile.defaultWastePercent ?? 5,
+        labor: initialTemplate.defaultLabor.map((l) => ({ ...l, id: generateId() })),
+        otherCosts: initialTemplate.defaultOtherCosts.map((o) => ({ ...o, id: generateId() })),
+        overheadType: initialTemplate.overheadType || 'percent',
+        overheadValue: initialTemplate.overheadValue !== undefined ? initialTemplate.overheadValue : 0,
+        pricingMode: initialTemplate.pricingMode || 'margin',
+        targetProfitPercent: initialTemplate.targetMarginPercent ?? profile.defaultMarginPercent ?? 25,
+        roundingStep: initialTemplate.roundingStep || profile.defaultRounding || 'none',
+        templateId: initialTemplate.id,
+      };
+    }
+    return null;
+  }, [initialCalculation, editingQuote, initialTemplate, profile]);
 
-  const [wastePercent, setWastePercent] = useState<number>(
-    initialCalculation?.wastePercent ?? profile.defaultWastePercent ?? 5
-  );
+  // State initialization from draft
+  const [materials, setMaterials] = useState<MaterialItem[]>(() => {
+    if (draft?.materials) return draft.materials;
+    return [];
+  });
 
-  const [labor, setLabor] = useState<LaborItem[]>(
-    initialCalculation?.labor || [
-      { id: generateId(), task: 'Découpe & Soudure métallique', hours: 8, hourlyRate: profile.defaultLaborRate || 2500 },
-    ]
-  );
+  const [wastePercent, setWastePercent] = useState<number>(() => {
+    if (draft?.wastePercent !== undefined) return draft.wastePercent;
+    return profile.defaultWastePercent ?? 5;
+  });
 
-  const [otherCosts, setOtherCosts] = useState<OtherCostItem[]>(
-    initialCalculation?.otherCosts || [
-      { id: generateId(), description: 'Transport et livraison', amount: 5000, category: 'transport' },
-    ]
-  );
+  const [labor, setLabor] = useState<LaborItem[]>(() => {
+    if (draft?.labor) return draft.labor;
+    return [];
+  });
+
+  const [otherCosts, setOtherCosts] = useState<OtherCostItem[]>(() => {
+    if (draft?.otherCosts) return draft.otherCosts;
+    return [];
+  });
 
   const [overheadType, setOverheadType] = useState<OverheadType>(
-    initialCalculation?.overheadType || 'percent'
+    draft?.overheadType || 'percent'
   );
   const [overheadValue, setOverheadValue] = useState<number>(
-    initialCalculation?.overheadValue || 0
+    draft?.overheadValue !== undefined ? draft.overheadValue : 0
   );
 
   const [pricingMode, setPricingMode] = useState<PricingMode>(
-    initialCalculation?.pricingMode || 'margin'
+    draft?.pricingMode || 'margin'
   );
   const [targetProfitPercent, setTargetProfitPercent] = useState<number>(
-    initialCalculation?.targetProfitPercent ?? profile.defaultMarginPercent ?? 25
+    draft?.targetProfitPercent ?? profile.defaultMarginPercent ?? 25
   );
 
   const [roundingStep, setRoundingStep] = useState<RoundingStep>(
-    initialCalculation?.roundingStep ?? profile.defaultRounding ?? 'none'
+    draft?.roundingStep ?? profile.defaultRounding ?? 'none'
   );
 
   const [showFormulaModal, setShowFormulaModal] = useState(false);
-  const [showQuickAddMaterial, setShowQuickAddMaterial] = useState(false);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [showReloadTemplateModal, setShowReloadTemplateModal] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>(
+    () => draft?.templateId || initialTemplate?.id || ''
+  );
 
-  // Load initialTemplate when provided
+  // Global notification system
+  const { showSuccess, showInfo, showError, showWarning } = useNotification();
+
+  // Save as Custom Template modal & state
+  const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false);
+  const [newTemplateName, setNewTemplateName] = useState('');
+  const [newTemplateCategory, setNewTemplateCategory] = useState<'metal' | 'bois' | 'alu' | 'autre'>('metal');
+  const [newTemplateDescription, setNewTemplateDescription] = useState('');
+
+  // Premium gate modal state
+  const [gateModalOpen, setGateModalOpen] = useState(false);
+  const [selectedPremiumTemplate, setSelectedPremiumTemplate] = useState<WorkshopTemplate | null>(null);
+
+  // Track the timestamp of the last loaded template to prevent re-applying old props on navigation
+  const lastLoadedTimestampRef = useRef<number | null>(null);
+
+  // Load initialTemplate when explicitly provided as a new action
   useEffect(() => {
     if (initialTemplate) {
-      setMaterials(
-        initialTemplate.defaultMaterials.map((m) => ({ ...m, id: generateId() }))
-      );
-      setWastePercent(initialTemplate.wastePercent ?? 5);
-      setLabor(
-        initialTemplate.defaultLabor.map((l) => ({ ...l, id: generateId() }))
-      );
-      setOtherCosts(
-        initialTemplate.defaultOtherCosts.map((o) => ({ ...o, id: generateId() }))
-      );
-      setTargetProfitPercent(initialTemplate.targetMarginPercent ?? 25);
+      const ts = initialTemplate._sessionTimestamp || 0;
+      if (ts && ts !== lastLoadedTimestampRef.current) {
+        lastLoadedTimestampRef.current = ts;
+        if (initialTemplate.isPremiumOnly && !isPremium(entitlement)) {
+          setSelectedPremiumTemplate(initialTemplate);
+          setGateModalOpen(true);
+          onConsumeTemplate?.();
+          return;
+        }
+        setMaterials(
+          initialTemplate.defaultMaterials.map((m) => ({ ...m, id: generateId() }))
+        );
+        setWastePercent(initialTemplate.wastePercent ?? profile.defaultWastePercent ?? 5);
+        setLabor(
+          initialTemplate.defaultLabor.map((l) => ({ ...l, id: generateId() }))
+        );
+        setOtherCosts(
+          initialTemplate.defaultOtherCosts.map((o) => ({ ...o, id: generateId() }))
+        );
+        setTargetProfitPercent(initialTemplate.targetMarginPercent ?? profile.defaultMarginPercent ?? 25);
+        if (initialTemplate.overheadType) setOverheadType(initialTemplate.overheadType);
+        if (initialTemplate.overheadValue !== undefined) setOverheadValue(initialTemplate.overheadValue);
+        if (initialTemplate.pricingMode) setPricingMode(initialTemplate.pricingMode);
+        if (initialTemplate.roundingStep) setRoundingStep(initialTemplate.roundingStep);
+        setSelectedTemplateId(initialTemplate.id);
+        onConsumeTemplate?.();
+      }
     }
-  }, [initialTemplate]);
+  }, [initialTemplate, entitlement, onConsumeTemplate, profile]);
+
+  // Load initialCalculation when it changes (e.g. editing quote source calculation)
+  useEffect(() => {
+    if (initialCalculation) {
+      setMaterials(initialCalculation.materials);
+      setWastePercent(initialCalculation.wastePercent);
+      setLabor(initialCalculation.labor);
+      setOtherCosts(initialCalculation.otherCosts);
+      setOverheadType(initialCalculation.overheadType);
+      setOverheadValue(initialCalculation.overheadValue);
+      setPricingMode(initialCalculation.pricingMode);
+      setTargetProfitPercent(initialCalculation.targetProfitPercent);
+      setRoundingStep(initialCalculation.roundingStep);
+      if (initialCalculation.templateId) {
+        setSelectedTemplateId(initialCalculation.templateId);
+      }
+    }
+  }, [initialCalculation]);
 
   // Prepare input for pure engine
   const calculationInput: CalculationInput = useMemo(() => {
@@ -155,6 +264,7 @@ export function QuickCalculator({
       pricingMode,
       targetProfitPercent,
       roundingStep,
+      templateId: selectedTemplateId || undefined,
     };
   }, [
     materials,
@@ -166,7 +276,15 @@ export function QuickCalculator({
     pricingMode,
     targetProfitPercent,
     roundingStep,
+    selectedTemplateId,
   ]);
+
+  // Save draft whenever calculationInput updates (unless editing a specific quote)
+  useEffect(() => {
+    if (!editingQuote) {
+      saveDraftCalculation(calculationInput);
+    }
+  }, [calculationInput, editingQuote]);
 
   // Real-time calculation
   const result: CalculationResult = useMemo(() => {
@@ -298,10 +416,23 @@ export function QuickCalculator({
     setOtherCosts((prev) => prev.filter((item) => item.id !== id));
   };
 
-  // Load Template
+  // Find the currently active template object if one was loaded
+  const loadedTemplate = useMemo(() => {
+    if (!selectedTemplateId) return null;
+    return templates.find((t) => t.id === selectedTemplateId) || null;
+  }, [templates, selectedTemplateId]);
+
+  // Apply template with premium gate & clean state load
   const handleApplyTemplate = (tplId: string) => {
     const tpl = templates.find((t) => t.id === tplId);
     if (!tpl) return;
+
+    if (tpl.isPremiumOnly && !isPremium(entitlement)) {
+      setSelectedPremiumTemplate(tpl);
+      setGateModalOpen(true);
+      setSelectedTemplateId('');
+      return;
+    }
 
     setMaterials(
       tpl.defaultMaterials.map((m) => ({
@@ -324,26 +455,174 @@ export function QuickCalculator({
       }))
     );
 
-    setWastePercent(tpl.wastePercent || 5);
-    setTargetProfitPercent(tpl.targetMarginPercent || 25);
+    setWastePercent(tpl.wastePercent ?? profile.defaultWastePercent ?? 5);
+    setTargetProfitPercent(tpl.targetMarginPercent ?? profile.defaultMarginPercent ?? 25);
+    setOverheadType(tpl.overheadType || 'percent');
+    setOverheadValue(tpl.overheadValue !== undefined ? tpl.overheadValue : 0);
+    setPricingMode(tpl.pricingMode || 'margin');
+    setRoundingStep(tpl.roundingStep || profile.defaultRounding || 'none');
+    
     setSelectedTemplateId(tplId);
+    showSuccess(`✓ Modèle « ${tpl.name} » chargé pour ce calcul.`);
   };
 
-  // Reset
-  const handleReset = () => {
-    if (window.confirm('Réinitialiser tous les champs du calculateur ?')) {
-      setMaterials([]);
-      setLabor([]);
-      setOtherCosts([]);
-      setWastePercent(profile.defaultWastePercent || 5);
-      setOverheadValue(0);
-      setTargetProfitPercent(profile.defaultMarginPercent || 25);
-      setRoundingStep(profile.defaultRounding || 'none');
+  // Custom Template Saving Handlers: "Save as new template"
+  const handleOpenSaveTemplateModal = () => {
+    const firstMat = materials[0]?.name;
+    const suggested = loadedTemplate
+      ? `${loadedTemplate.name} (Variante)`
+      : firstMat
+      ? `Ouvrage (${firstMat})`
+      : 'Mon Modèle sur mesure';
+    setNewTemplateName(suggested);
+    setNewTemplateCategory(loadedTemplate?.category || 'metal');
+    setNewTemplateDescription(loadedTemplate?.description || '');
+    setShowSaveTemplateModal(true);
+  };
+
+  // Explicit action: "Update existing custom template"
+  const handleUpdateCurrentTemplate = () => {
+    if (!loadedTemplate || !loadedTemplate.isCustom) return;
+    if (onSaveTemplate) {
+      try {
+        onSaveTemplate({
+          id: loadedTemplate.id,
+          name: loadedTemplate.name,
+          category: loadedTemplate.category,
+          description: loadedTemplate.description,
+          isCustom: true,
+          isPremiumOnly: false,
+          defaultMaterials: materials.map(({ id, ...m }) => ({ ...m })),
+          defaultLabor: labor.map(({ id, ...l }) => ({ ...l })),
+          defaultOtherCosts: otherCosts.map(({ id, ...o }) => ({ ...o })),
+          wastePercent,
+          targetMarginPercent: targetProfitPercent,
+          overheadType,
+          overheadValue,
+          pricingMode,
+          roundingStep,
+        });
+
+        // Visible non-blocking confirmation toast
+        const templateName = loadedTemplate.name ? ` « ${loadedTemplate.name} »` : '';
+        showSuccess(`✓ Modèle${templateName} mis à jour avec succès.`);
+      } catch (err) {
+        console.error('Failed to update template:', err);
+        showError('Impossible de mettre à jour le modèle.');
+      }
+    }
+  };
+
+  const handleConfirmSaveTemplate = (e: FormEvent) => {
+    e.preventDefault();
+    if (!newTemplateName.trim()) {
+      showError('Veuillez saisir un nom pour le modèle.');
+      focusAndScrollToField('calc-save-tpl-name');
+      return;
+    }
+
+    if (onSaveTemplate) {
+      try {
+        onSaveTemplate({
+          name: newTemplateName.trim(),
+          category: newTemplateCategory,
+          description: newTemplateDescription.trim(),
+          isCustom: true,
+          isPremiumOnly: false,
+          defaultMaterials: materials.map(({ id, ...m }) => ({ ...m })),
+          defaultLabor: labor.map(({ id, ...l }) => ({ ...l })),
+          defaultOtherCosts: otherCosts.map(({ id, ...o }) => ({ ...o })),
+          wastePercent,
+          targetMarginPercent: targetProfitPercent,
+          overheadType,
+          overheadValue,
+          pricingMode,
+          roundingStep,
+        });
+
+        setShowSaveTemplateModal(false);
+        showSuccess(`✓ Modèle « ${newTemplateName.trim()} » enregistré dans votre bibliothèque !`);
+      } catch (err) {
+        console.error('Failed to save template:', err);
+        showError('Impossible d\'enregistrer le modèle.');
+      }
+    }
+  };
+
+  // Reset confirmation & execution
+  const handleResetClick = () => {
+    // If the calculation is already clean/empty and not bound to a template, reset directly
+    const isAlreadyEmpty =
+      materials.length === 0 &&
+      labor.length === 0 &&
+      otherCosts.length === 0 &&
+      !selectedTemplateId &&
+      overheadValue === 0;
+
+    if (isAlreadyEmpty) {
+      handleConfirmReset();
+      return;
+    }
+
+    setShowResetModal(true);
+  };
+
+  const handleConfirmReset = () => {
+    clearDraftCalculation();
+    clearDraftQuote();
+    setMaterials([]);
+    setLabor([]);
+    setOtherCosts([]);
+    setWastePercent(profile.defaultWastePercent ?? 5);
+    setOverheadValue(0);
+    setOverheadType('percent');
+    setPricingMode('margin');
+    setTargetProfitPercent(profile.defaultMarginPercent ?? 25);
+    setRoundingStep(profile.defaultRounding ?? 'none');
+    setSelectedTemplateId('');
+    setShowResetModal(false);
+    onResetToNew?.();
+    showInfo('Calculateur réinitialisé pour une nouvelle session vierge.');
+  };
+
+  const handlePrimaryAction = () => {
+    if (editingQuote && onUpdateQuoteCalculation) {
+      onUpdateQuoteCalculation(calculationInput, result, editingQuote);
+    } else {
+      handleQuoteClick?.(calculationInput, result);
     }
   };
 
   return (
     <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-32 md:pb-12 animate-in fade-in duration-200">
+      {/* Context Banner if editing an existing quote's calculation */}
+      {editingQuote && (
+        <div className="mb-5 p-4 bg-teal-50 border border-teal-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-teal-900 shadow-2xs">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-teal-600 text-white rounded-lg">
+              <Calculator className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="font-bold text-sm">
+                Modification du calcul source — Devis N° {editingQuote.quoteNumber}
+              </div>
+              <div className="text-xs text-teal-700">
+                Projet : {editingQuote.projectTitle || 'Sans titre'} • Client : {editingQuote.customer.name || 'Non spécifié'}
+              </div>
+            </div>
+          </div>
+          {onCancelEditQuote && (
+            <button
+              onClick={onCancelEditQuote}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-teal-800 bg-white hover:bg-teal-100 rounded-lg border border-teal-300 transition-colors shadow-2xs"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Annuler & Revenir au devis</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Top Banner & Template Quick Loader */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <div>
@@ -371,23 +650,140 @@ export function QuickCalculator({
               className="px-3 py-1.5 text-xs font-semibold bg-white border border-slate-300 rounded-lg text-slate-700 shadow-2xs hover:bg-slate-50 focus:outline-hidden focus:ring-2 focus:ring-teal-500"
             >
               <option value="">⚡ Charger un modèle d'ouvrage...</option>
-              {templates.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
+              
+              {/* Free built-in templates */}
+              {templates.filter((t) => !t.isPremiumOnly && !t.isCustom).length > 0 && (
+                <optgroup label="── Modèles Gratuits ──">
+                  {templates
+                    .filter((t) => !t.isPremiumOnly && !t.isCustom)
+                    .map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                </optgroup>
+              )}
+
+              {/* Premium templates */}
+              {templates.filter((t) => t.isPremiumOnly).length > 0 && (
+                <optgroup label="── Modèles Pro (Premium) ──">
+                  {templates
+                    .filter((t) => t.isPremiumOnly)
+                    .map((t) => (
+                      <option key={t.id} value={t.id}>
+                        👑 {t.name} (Pro)
+                      </option>
+                    ))}
+                </optgroup>
+              )}
+
+              {/* Custom user templates */}
+              {templates.filter((t) => t.isCustom).length > 0 && (
+                <optgroup label="── Mes Modèles Personnalisés ──">
+                  {templates
+                    .filter((t) => t.isCustom)
+                    .map((t) => (
+                      <option key={t.id} value={t.id}>
+                        ✨ {t.name}
+                      </option>
+                    ))}
+                </optgroup>
+              )}
             </select>
           </div>
 
+          {/* Action buttons */}
+          {loadedTemplate && loadedTemplate.isCustom ? (
+            <>
+              <button
+                type="button"
+                onClick={handleUpdateCurrentTemplate}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-teal-950 bg-teal-100 hover:bg-teal-200 border border-teal-300 rounded-lg transition-colors shadow-2xs cursor-pointer"
+                title={`Enregistrer vos modifications actuelles dans ce modèle personnalisé « ${loadedTemplate.name} » (écrase la version précédente en bibliothèque)`}
+              >
+                <Check className="w-3.5 h-3.5 text-teal-700" />
+                <span>Mettre à jour ce modèle</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleOpenSaveTemplateModal}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-700 hover:text-slate-950 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-colors shadow-2xs cursor-pointer"
+                title="Créer un nouveau modèle distinct à partir de ces valeurs. Le modèle d'origine restera inchangé."
+              >
+                <BookmarkPlus className="w-3.5 h-3.5 text-teal-600" />
+                <span>Enregistrer comme nouveau modèle</span>
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={handleOpenSaveTemplateModal}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-teal-800 hover:text-teal-950 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-lg transition-colors shadow-2xs cursor-pointer"
+              title="Créer un nouveau modèle personnalisé réutilisable dans votre bibliothèque à partir de ce calcul"
+            >
+              <BookmarkPlus className="w-3.5 h-3.5 text-teal-600" />
+              <span>Enregistrer comme nouveau modèle</span>
+            </button>
+          )}
+
           <button
-            onClick={handleReset}
-            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded-lg transition-colors"
-            title="Effacer et réinitialiser"
+            type="button"
+            onClick={handleResetClick}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-700 hover:text-slate-950 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg transition-colors shadow-2xs cursor-pointer"
+            title="Effacer ce calcul et démarrer une nouvelle session vierge"
           >
-            <RefreshCw className="w-4 h-4" />
+            <RotateCcw className="w-3.5 h-3.5 text-slate-600" />
+            <span>Nouveau calcul vierge</span>
           </button>
         </div>
       </div>
+
+      {/* Session / Loaded Template Indicator Banner */}
+      {loadedTemplate && (
+        <div className="mb-5 p-3 sm:p-3.5 bg-slate-50 border border-slate-200/90 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-2xs animate-in fade-in duration-150">
+          <div className="flex items-start sm:items-center gap-2.5">
+            <div className={`p-2 rounded-lg shrink-0 ${loadedTemplate.isCustom ? 'bg-teal-100 text-teal-800' : loadedTemplate.isPremiumOnly ? 'bg-amber-100 text-amber-900' : 'bg-slate-200 text-slate-700'}`}>
+              <BookmarkCheck className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-slate-500 font-medium">Session de calcul basée sur le modèle :</span>
+                <span className="font-bold text-slate-900">{loadedTemplate.name}</span>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${loadedTemplate.isCustom ? 'bg-teal-100 text-teal-800 border border-teal-200' : loadedTemplate.isPremiumOnly ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-slate-200 text-slate-700'}`}>
+                  {loadedTemplate.isCustom ? 'Modèle Personnalisé' : loadedTemplate.isPremiumOnly ? '👑 Modèle Pro' : 'Modèle Standard'}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Les modifications apportées à ce calcul sont propres à ce devis. Le modèle d'origine en bibliothèque reste intact.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+            <button
+              type="button"
+              onClick={() => setShowReloadTemplateModal(true)}
+              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-200/80 rounded-lg transition-colors cursor-pointer"
+              title="Annuler vos modifications sur ce calcul et recharger les valeurs d'origine du modèle"
+            >
+              <RotateCcw className="w-3 h-3 text-slate-500" />
+              <span>Recharger les valeurs initiales du modèle</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedTemplateId('');
+                showInfo('Calcul détaché de la référence du modèle.');
+              }}
+              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-slate-500 hover:text-slate-800 hover:bg-slate-200/80 rounded-lg transition-colors cursor-pointer"
+              title="Détacher ce calcul du modèle pour continuer en calcul libre"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>Détacher</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Main Grid: Inputs (Left 7 cols) + Sticky Live Result Card (Right 5 cols) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -420,7 +816,7 @@ export function QuickCalculator({
               </div>
 
               <div className="text-right">
-                <span className="text-xs text-slate-400 block">Total Matériaux</span>
+                <span className="text-xs text-slate-400 block">Matériaux bruts</span>
                 <span className="font-mono text-sm font-bold text-slate-900">
                   {formatCurrency(result.rawMaterialCost, currency)}
                 </span>
@@ -431,7 +827,7 @@ export function QuickCalculator({
             <div className="space-y-2.5">
               {materials.length === 0 ? (
                 <div className="text-center py-6 border-2 border-dashed border-slate-200 rounded-lg text-xs text-slate-400">
-                  Aucun matériau ajouté. Cliquez sur "Ajouter un matériau" ci-dessous.
+                  Aucun matériau ajouté. Cliquez sur "Ajouter une ligne libre" ci-dessous.
                 </div>
               ) : (
                 materials.map((mat, index) => {
@@ -439,54 +835,54 @@ export function QuickCalculator({
                   return (
                     <div
                       key={mat.id}
-                      className="p-3 bg-slate-50 rounded-lg border border-slate-200/80 space-y-2 text-xs"
+                      className="p-3 bg-slate-50 rounded-lg border border-slate-200/80 space-y-2.5 text-xs"
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-bold text-slate-500 text-[11px]">
+                        <span className="font-bold text-slate-500 text-[11px] shrink-0">
                           #{index + 1}
                         </span>
                         <input
                           type="text"
                           value={mat.name}
                           onChange={(e) => handleUpdateMaterial(mat.id, 'name', e.target.value)}
-                          placeholder="Nom du matériau (ex: Tube carré 40×40)"
-                          className="flex-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded font-medium text-slate-800 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+                          placeholder="Désignation (ex: Tube carré 40×40, Tôle 2mm...)"
+                          className="flex-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-medium text-slate-900 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
                         />
                         <button
                           onClick={() => handleRemoveMaterial(mat.id)}
-                          className="p-1.5 text-slate-400 hover:text-red-600 rounded transition-colors"
+                          className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer shrink-0"
                           title="Supprimer la ligne"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
 
-                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 items-center">
-                        {/* Quantity */}
-                        <div>
-                          <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">
+                      <div className="grid grid-cols-2 sm:grid-cols-12 gap-2.5 items-end">
+                        {/* Quantity with Stepper */}
+                        <div className="col-span-1 sm:col-span-4">
+                          <label className="text-[10px] font-semibold text-slate-500 block mb-1">
                             Quantité
                           </label>
-                          <input
-                            type="number"
-                            min="0"
-                            step="any"
-                            value={mat.quantity === 0 ? '' : mat.quantity}
-                            onChange={(e) => handleUpdateMaterial(mat.id, 'quantity', e.target.value)}
+                          <NumberStepper
+                            value={mat.quantity}
+                            onChange={(val) => handleUpdateMaterial(mat.id, 'quantity', val)}
+                            min={0}
+                            step={1}
                             placeholder="1"
-                            className="w-full px-2 py-1 bg-white border border-slate-300 rounded font-mono text-slate-800 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+                            className="w-full"
+                            ariaLabel={`Quantité pour ${mat.name || 'matériau'}`}
                           />
                         </div>
 
                         {/* Unit */}
-                        <div>
-                          <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">
+                        <div className="col-span-1 sm:col-span-3">
+                          <label className="text-[10px] font-semibold text-slate-500 block mb-1">
                             Unité
                           </label>
                           <select
                             value={mat.unit}
                             onChange={(e) => handleUpdateMaterial(mat.id, 'unit', e.target.value)}
-                            className="w-full px-2 py-1 bg-white border border-slate-300 rounded text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+                            className="w-full h-8 sm:h-7 px-2 py-0 bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-teal-500 text-xs font-medium"
                           >
                             {COMMON_UNITS.map((u) => (
                               <option key={u.value} value={u.value}>
@@ -497,8 +893,8 @@ export function QuickCalculator({
                         </div>
 
                         {/* Unit Price */}
-                        <div>
-                          <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">
+                        <div className="col-span-1 sm:col-span-3">
+                          <label className="text-[10px] font-semibold text-slate-500 block mb-1">
                             Prix Unit. ({currency})
                           </label>
                           <input
@@ -508,16 +904,16 @@ export function QuickCalculator({
                             value={mat.unitPrice === 0 ? '' : mat.unitPrice}
                             onChange={(e) => handleUpdateMaterial(mat.id, 'unitPrice', e.target.value)}
                             placeholder="0"
-                            className="w-full px-2 py-1 bg-white border border-slate-300 rounded font-mono text-slate-800 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+                            className="w-full h-8 sm:h-7 px-2 py-1 bg-white border border-slate-300 rounded-lg font-mono font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-teal-500 text-xs text-right"
                           />
                         </div>
 
                         {/* Subtotal */}
-                        <div className="col-span-3 sm:col-span-1 text-right">
-                          <label className="text-[10px] font-semibold text-slate-400 block mb-0.5">
+                        <div className="col-span-1 sm:col-span-2 text-right">
+                          <label className="text-[10px] font-semibold text-slate-400 block mb-1">
                             Sous-total
                           </label>
-                          <div className="font-mono font-bold text-slate-900 text-xs py-1">
+                          <div className="font-mono font-bold text-slate-900 text-xs sm:text-sm h-8 sm:h-7 flex items-center justify-end">
                             {formatCurrency(subtotal, currency)}
                           </div>
                         </div>
@@ -563,35 +959,47 @@ export function QuickCalculator({
               </div>
             </div>
 
-            {/* Waste / Loss Section */}
-            <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/70 p-3 rounded-lg border border-slate-200">
-              <div className="space-y-0.5">
-                <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                  <Percent className="w-3.5 h-3.5 text-amber-600" />
-                  Chutes / Pertes de matière (%) :
+            {/* Waste / Loss Section - Clear, distinct breakdown */}
+            <div className="pt-3 border-t border-slate-100 bg-slate-50/80 p-3 rounded-lg border border-slate-200 text-xs space-y-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                    <Percent className="w-3.5 h-3.5 text-amber-600" />
+                    Chutes & Pertes de matière (%) :
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    Compense les découpes, chutes métalliques et pertes inévitables.
+                  </div>
                 </div>
-                <div className="text-[11px] text-slate-500">
-                  Compense les découpes, chutes métalliques et pertes atelier.
+
+                <div className="flex items-center gap-1">
+                  <NumberStepper
+                    value={wastePercent}
+                    onChange={(val) => setWastePercent(Math.max(0, Math.min(50, val)))}
+                    min={0}
+                    max={50}
+                    step={1}
+                    unit="%"
+                    placeholder="0"
+                    className="w-32"
+                    ariaLabel="Pourcentage de chutes et pertes"
+                  />
                 </div>
               </div>
 
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-1 w-24">
-                  <input
-                    type="number"
-                    min="0"
-                    max="50"
-                    value={wastePercent === 0 ? '' : wastePercent}
-                    onChange={(e) => setWastePercent(Math.max(0, sanitizeNumber(e.target.value)))}
-                    className="w-full px-2 py-1 bg-white border border-slate-300 rounded text-right font-mono font-bold text-xs focus:ring-1 focus:ring-teal-500"
-                  />
-                  <span className="text-xs font-bold text-slate-600">%</span>
+              {/* Clear mathematical summary */}
+              <div className="pt-2 border-t border-slate-200/70 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] font-mono">
+                <div className="text-slate-600">
+                  <span className="text-slate-400 font-sans block text-[10px]">Matériaux bruts</span>
+                  <span className="font-bold">{formatCurrency(result.rawMaterialCost, currency)}</span>
                 </div>
-                <div className="text-right">
-                  <span className="text-[10px] text-slate-400 block">Ajusté (+ {formatCurrency(result.wasteAmount, currency)})</span>
-                  <span className="font-mono text-xs font-bold text-amber-900">
-                    {formatCurrency(result.adjustedMaterialCost, currency)}
-                  </span>
+                <div className="text-amber-800">
+                  <span className="text-amber-600 font-sans block text-[10px]">Coût des pertes ({wastePercent} %)</span>
+                  <span className="font-bold">+{formatCurrency(result.wasteAmount, currency)}</span>
+                </div>
+                <div className="text-slate-900 font-bold">
+                  <span className="text-teal-700 font-sans block text-[10px]">Matériaux après pertes</span>
+                  <span>{formatCurrency(result.adjustedMaterialCost, currency)}</span>
                 </div>
               </div>
             </div>
@@ -605,9 +1013,9 @@ export function QuickCalculator({
                   <span className="w-5 h-5 rounded bg-teal-100 text-teal-800 text-xs font-black flex items-center justify-center">
                     B
                   </span>
-                  Main-d'œuvre & Temps d'atelier
+                  Main d'Œuvre & Temps de Travail
                 </h2>
-                <p className="text-xs text-slate-500">Soudure, découpe, assemblage, peinture, pose...</p>
+                <p className="text-xs text-slate-500">Heures de travail atelier, façonnage, assemblage et pose...</p>
               </div>
 
               <div className="text-right">
@@ -618,10 +1026,11 @@ export function QuickCalculator({
               </div>
             </div>
 
+            {/* Labor Lines */}
             <div className="space-y-2.5">
               {labor.length === 0 ? (
-                <div className="text-center py-4 border-2 border-dashed border-slate-200 rounded-lg text-xs text-slate-400">
-                  Aucune heure de main d'œuvre ajoutée.
+                <div className="text-center py-6 border-2 border-dashed border-slate-200 rounded-lg text-xs text-slate-400">
+                  Aucune tâche de main-d'œuvre. Ajoutez au moins une étape de travail.
                 </div>
               ) : (
                 labor.map((l, index) => {
@@ -629,63 +1038,68 @@ export function QuickCalculator({
                   return (
                     <div
                       key={l.id}
-                      className="p-3 bg-slate-50 rounded-lg border border-slate-200/80 space-y-2 text-xs"
+                      className="p-3 bg-slate-50 rounded-lg border border-slate-200/80 space-y-2.5 text-xs"
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-bold text-slate-500 text-[11px]">
+                        <span className="font-bold text-slate-500 text-[11px] shrink-0">
                           #{index + 1}
                         </span>
                         <input
                           type="text"
                           value={l.task}
                           onChange={(e) => handleUpdateLabor(l.id, 'task', e.target.value)}
-                          placeholder="Tâche (ex: Découpe & Soudure à l'arc)"
-                          className="flex-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded font-medium text-slate-800 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+                          placeholder="Intitulé de la tâche (ex: Découpe & Soudure, Pose...)"
+                          className="flex-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-medium text-slate-900 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
                         />
                         <button
                           onClick={() => handleRemoveLabor(l.id)}
-                          className="p-1.5 text-slate-400 hover:text-red-600 rounded transition-colors"
+                          className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer shrink-0"
+                          title="Supprimer la ligne"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
 
-                      <div className="grid grid-cols-3 gap-2 items-center">
-                        <div>
-                          <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">
-                            Heures estimées
+                      <div className="grid grid-cols-2 sm:grid-cols-12 gap-2.5 items-end">
+                        {/* Hours with Stepper */}
+                        <div className="col-span-1 sm:col-span-4">
+                          <label className="text-[10px] font-semibold text-slate-500 block mb-1">
+                            Temps (Heures)
                           </label>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.5"
-                            value={l.hours === 0 ? '' : l.hours}
-                            onChange={(e) => handleUpdateLabor(l.id, 'hours', e.target.value)}
-                            placeholder="1"
-                            className="w-full px-2 py-1 bg-white border border-slate-300 rounded font-mono text-slate-800 focus:ring-1 focus:ring-teal-500"
+                          <NumberStepper
+                            value={l.hours}
+                            onChange={(val) => handleUpdateLabor(l.id, 'hours', val)}
+                            min={0}
+                            step={0.5}
+                            unit="h"
+                            placeholder="0"
+                            className="w-full"
+                            ariaLabel={`Temps pour ${l.task || 'tâche'}`}
                           />
                         </div>
 
-                        <div>
-                          <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">
-                            Taux horaire ({currency}/h)
+                        {/* Hourly Rate */}
+                        <div className="col-span-1 sm:col-span-4">
+                          <label className="text-[10px] font-semibold text-slate-500 block mb-1">
+                            Taux Horaire ({currency}/h)
                           </label>
                           <input
                             type="number"
                             min="0"
-                            step="100"
+                            step="any"
                             value={l.hourlyRate === 0 ? '' : l.hourlyRate}
                             onChange={(e) => handleUpdateLabor(l.id, 'hourlyRate', e.target.value)}
-                            placeholder="2500"
-                            className="w-full px-2 py-1 bg-white border border-slate-300 rounded font-mono text-slate-800 focus:ring-1 focus:ring-teal-500"
+                            placeholder="0"
+                            className="w-full h-8 sm:h-7 px-2 py-1 bg-white border border-slate-300 rounded-lg font-mono font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-teal-500 text-xs text-right"
                           />
                         </div>
 
-                        <div className="text-right">
-                          <label className="text-[10px] font-semibold text-slate-400 block mb-0.5">
-                            Coût tâche
+                        {/* Subtotal */}
+                        <div className="col-span-2 sm:col-span-4 text-right">
+                          <label className="text-[10px] font-semibold text-slate-400 block mb-1">
+                            Coût Main-d'œuvre
                           </label>
-                          <div className="font-mono font-bold text-slate-900 text-xs py-1">
+                          <div className="font-mono font-bold text-slate-900 text-xs sm:text-sm h-8 sm:h-7 flex items-center justify-end">
                             {formatCurrency(subtotal, currency)}
                           </div>
                         </div>
@@ -696,6 +1110,7 @@ export function QuickCalculator({
               )}
             </div>
 
+            {/* Add labor actions */}
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <button
                 onClick={() => handleAddLabor()}
@@ -705,6 +1120,7 @@ export function QuickCalculator({
                 <span>Ajouter une tâche</span>
               </button>
 
+              {/* Quick picker from labor rates library */}
               <div className="relative">
                 <select
                   onChange={(e) => {
@@ -718,7 +1134,7 @@ export function QuickCalculator({
                   className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
                 >
                   <option value="" disabled>
-                    + Choisir un tarif type...
+                    + Choisir un taux prédéfini ({allLaborRates.length})...
                   </option>
                   {allLaborRates.map((r) => (
                     <option key={r.id} value={r.id}>
@@ -730,7 +1146,7 @@ export function QuickCalculator({
             </div>
           </div>
 
-          {/* SECTION C: AUTRES COÛTS & FRAIS SUPPLÉMENTAIRES */}
+          {/* SECTION C: AUTRES COÛTS & FRAIS GÉNÉRAUX */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-2xs p-4 sm:p-5 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
@@ -738,49 +1154,53 @@ export function QuickCalculator({
                   <span className="w-5 h-5 rounded bg-teal-100 text-teal-800 text-xs font-black flex items-center justify-center">
                     C
                   </span>
-                  Autres Coûts Directs & Frais de Fonctionnement
+                  Autres Coûts & Frais d'Atelier
                 </h2>
-                <p className="text-xs text-slate-500">Transport, électricité, sous-traitance, consommables...</p>
+                <p className="text-xs text-slate-500">Transport, carburant, quincaillerie externe, fonctionnement...</p>
               </div>
 
               <div className="text-right">
-                <span className="text-xs text-slate-400 block">Total Annexes</span>
+                <span className="text-xs text-slate-400 block">Total Frais</span>
                 <span className="font-mono text-sm font-bold text-slate-900">
                   {formatCurrency(result.otherCostsTotal + result.overheadCost, currency)}
                 </span>
               </div>
             </div>
 
-            {/* Other costs list */}
+            {/* Other Cost items */}
             <div className="space-y-2">
-              {otherCosts.map((item, index) => (
+              {otherCosts.map((item) => (
                 <div
                   key={item.id}
-                  className="flex items-center justify-between gap-2 p-2.5 bg-slate-50 rounded-lg border border-slate-200 text-xs"
+                  className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 p-2.5 bg-slate-50 rounded-lg border border-slate-200 text-xs"
                 >
                   <input
                     type="text"
                     value={item.description}
                     onChange={(e) => handleUpdateOtherCost(item.id, 'description', e.target.value)}
-                    placeholder="Description (ex: Transport sur chantier)"
-                    className="flex-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded font-medium text-slate-800 focus:ring-1 focus:ring-teal-500"
+                    placeholder="Description (ex: Transport, location machine...)"
+                    className="flex-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-medium text-slate-900 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
                   />
-                  <div className="w-32">
-                    <input
-                      type="number"
-                      min="0"
-                      value={item.amount === 0 ? '' : item.amount}
-                      onChange={(e) => handleUpdateOtherCost(item.id, 'amount', e.target.value)}
-                      placeholder="Montant FCFA"
-                      className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-right font-mono font-semibold text-slate-800 focus:ring-1 focus:ring-teal-500"
-                    />
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 sm:w-36 flex items-center gap-1 bg-white border border-slate-300 rounded-lg px-2 py-0.5 focus-within:ring-2 focus-within:ring-teal-500">
+                      <input
+                        type="number"
+                        min="0"
+                        value={item.amount === 0 ? '' : item.amount}
+                        onChange={(e) => handleUpdateOtherCost(item.id, 'amount', e.target.value)}
+                        placeholder="0"
+                        className="w-full py-1 bg-transparent border-0 font-mono font-bold text-right text-xs text-slate-900 focus:outline-hidden"
+                      />
+                      <span className="text-[11px] font-bold text-slate-400 select-none">{currency}</span>
+                    </div>
+                    <button
+                      onClick={() => handleRemoveOtherCost(item.id)}
+                      className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer shrink-0"
+                      title="Supprimer la ligne"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </div>
-                  <button
-                    onClick={() => handleRemoveOtherCost(item.id)}
-                    className="p-1.5 text-slate-400 hover:text-red-600 rounded"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
                 </div>
               ))}
 
@@ -802,24 +1222,41 @@ export function QuickCalculator({
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                 <select
                   value={overheadType}
                   onChange={(e) => setOverheadType(e.target.value as OverheadType)}
-                  className="px-2 py-1 bg-white border border-slate-300 rounded text-xs text-slate-700"
+                  className="px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-medium text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
                 >
                   <option value="percent">% Coûts directs</option>
                   <option value="fixed">Montant fixe ({currency})</option>
                 </select>
 
-                <input
-                  type="number"
-                  min="0"
-                  value={overheadValue === 0 ? '' : overheadValue}
-                  onChange={(e) => setOverheadValue(Math.max(0, sanitizeNumber(e.target.value)))}
-                  placeholder="0"
-                  className="w-24 px-2 py-1 bg-white border border-slate-300 rounded font-mono text-right text-xs"
-                />
+                {overheadType === 'percent' ? (
+                  <NumberStepper
+                    value={overheadValue}
+                    onChange={(val) => setOverheadValue(Math.max(0, val))}
+                    min={0}
+                    max={100}
+                    step={1}
+                    unit="%"
+                    placeholder="0"
+                    className="w-32"
+                    ariaLabel="Pourcentage de frais généraux"
+                  />
+                ) : (
+                  <div className="flex items-center gap-1 bg-white border border-slate-300 rounded-lg px-2 py-0.5 w-32 focus-within:ring-2 focus-within:ring-teal-500">
+                    <input
+                      type="number"
+                      min="0"
+                      value={overheadValue === 0 ? '' : overheadValue}
+                      onChange={(e) => setOverheadValue(Math.max(0, sanitizeNumber(e.target.value)))}
+                      placeholder="0"
+                      className="w-full py-1 bg-transparent border-0 font-mono font-bold text-right text-xs text-slate-900 focus:outline-hidden"
+                    />
+                    <span className="text-[11px] font-bold text-slate-400">{currency}</span>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -885,23 +1322,23 @@ export function QuickCalculator({
               </div>
             </div>
 
-            {/* Target Percentage Slider & Input */}
-            <div className="space-y-2">
-              <div className="flex justify-between items-center">
+            {/* Target Percentage Stepper, Slider & Quick Presets */}
+            <div className="space-y-2.5">
+              <div className="flex justify-between items-center gap-2">
                 <span className="text-xs font-bold text-slate-800">
                   {pricingMode === 'margin' ? 'Taux de Marge Cible :' : 'Pourcentage de Marque :'}
                 </span>
-                <div className="flex items-center gap-1">
-                  <input
-                    type="number"
-                    min="1"
-                    max={pricingMode === 'margin' ? 95 : 200}
-                    value={targetProfitPercent}
-                    onChange={(e) => setTargetProfitPercent(sanitizeNumber(e.target.value))}
-                    className="w-16 px-2 py-1 bg-white border border-slate-300 rounded font-mono font-bold text-right text-xs focus:ring-1 focus:ring-teal-500"
-                  />
-                  <span className="text-xs font-bold text-slate-700">%</span>
-                </div>
+                <NumberStepper
+                  value={targetProfitPercent}
+                  onChange={(val) => setTargetProfitPercent(Math.max(1, Math.min(pricingMode === 'margin' ? 95 : 200, val)))}
+                  min={1}
+                  max={pricingMode === 'margin' ? 95 : 200}
+                  step={1}
+                  unit="%"
+                  placeholder="25"
+                  className="w-32"
+                  ariaLabel="Pourcentage de marge"
+                />
               </div>
 
               <input
@@ -915,12 +1352,12 @@ export function QuickCalculator({
               />
 
               <div className="flex justify-between text-[10px] text-slate-400 font-mono">
-                <button onClick={() => setTargetProfitPercent(15)} className="hover:text-teal-700">15%</button>
-                <button onClick={() => setTargetProfitPercent(20)} className="hover:text-teal-700">20%</button>
-                <button onClick={() => setTargetProfitPercent(25)} className="hover:text-teal-700 font-bold text-slate-700">25% (Standard)</button>
-                <button onClick={() => setTargetProfitPercent(30)} className="hover:text-teal-700 font-bold text-slate-700">30%</button>
-                <button onClick={() => setTargetProfitPercent(40)} className="hover:text-teal-700">40%</button>
-                <button onClick={() => setTargetProfitPercent(50)} className="hover:text-teal-700">50%</button>
+                <button onClick={() => setTargetProfitPercent(15)} className={`hover:text-teal-700 cursor-pointer ${targetProfitPercent === 15 ? 'text-teal-800 font-bold' : ''}`}>15%</button>
+                <button onClick={() => setTargetProfitPercent(20)} className={`hover:text-teal-700 cursor-pointer ${targetProfitPercent === 20 ? 'text-teal-800 font-bold' : ''}`}>20%</button>
+                <button onClick={() => setTargetProfitPercent(25)} className={`hover:text-teal-700 cursor-pointer ${targetProfitPercent === 25 ? 'text-teal-800 font-bold' : ''}`}>25%</button>
+                <button onClick={() => setTargetProfitPercent(30)} className={`hover:text-teal-700 cursor-pointer ${targetProfitPercent === 30 ? 'text-teal-800 font-bold' : ''}`}>30%</button>
+                <button onClick={() => setTargetProfitPercent(40)} className={`hover:text-teal-700 cursor-pointer ${targetProfitPercent === 40 ? 'text-teal-800 font-bold' : ''}`}>40%</button>
+                <button onClick={() => setTargetProfitPercent(50)} className={`hover:text-teal-700 cursor-pointer ${targetProfitPercent === 50 ? 'text-teal-800 font-bold' : ''}`}>50%</button>
               </div>
             </div>
 
@@ -952,7 +1389,7 @@ export function QuickCalculator({
             </div>
           </div>
 
-          {/* MAIN PROMINENT RESULTS CARD (As required in Section 4) */}
+          {/* MAIN PROMINENT RESULTS CARD */}
           <div className="bg-slate-900 text-white rounded-2xl p-6 shadow-xl border border-slate-800 space-y-6">
             {/* Top Recommended Price */}
             <div className="space-y-1">
@@ -997,8 +1434,12 @@ export function QuickCalculator({
                 <span className="font-mono text-slate-300">{formatCurrency(result.rawMaterialCost, currency)}</span>
               </div>
               <div className="flex justify-between text-slate-400">
-                <span>Chutes / Pertes ({wastePercent}%) :</span>
+                <span>Pertes / Chutes ({wastePercent} %) :</span>
                 <span className="font-mono text-amber-400">+{formatCurrency(result.wasteAmount, currency)}</span>
+              </div>
+              <div className="flex justify-between text-slate-400">
+                <span>Matériaux après pertes :</span>
+                <span className="font-mono text-teal-300">{formatCurrency(result.adjustedMaterialCost, currency)}</span>
               </div>
               <div className="flex justify-between text-slate-400">
                 <span>Main-d'œuvre :</span>
@@ -1021,12 +1462,16 @@ export function QuickCalculator({
             {/* Action Buttons */}
             <div className="space-y-2 pt-2">
               <button
-                onClick={() => handleQuoteClick?.(calculationInput, result)}
+                onClick={handlePrimaryAction}
                 disabled={!result.isValid || result.roundedSellingPrice === 0}
                 className="w-full py-3.5 px-4 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 font-black rounded-xl text-sm transition-all shadow-md flex items-center justify-center gap-2 hover:scale-[1.01]"
               >
                 <FileText className="w-4 h-4" />
-                <span>Créer le Devis à partir de ce calcul</span>
+                <span>
+                  {editingQuote
+                    ? `Mettre à jour le Devis N° ${editingQuote.quoteNumber}`
+                    : 'Créer le Devis à partir de ce calcul'}
+                </span>
                 <ArrowRight className="w-4 h-4" />
               </button>
 
@@ -1054,12 +1499,12 @@ export function QuickCalculator({
         </div>
 
         <button
-          onClick={() => handleQuoteClick?.(calculationInput, result)}
+          onClick={handlePrimaryAction}
           disabled={!result.isValid || result.roundedSellingPrice === 0}
           className="py-2 px-3.5 bg-teal-500 text-slate-950 font-extrabold rounded-lg text-xs flex items-center gap-1.5 shadow-sm"
         >
           <FileText className="w-3.5 h-3.5" />
-          <span>Faire Devis</span>
+          <span>{editingQuote ? 'Mettre à jour' : 'Faire Devis'}</span>
         </button>
       </div>
 
@@ -1070,6 +1515,215 @@ export function QuickCalculator({
         input={calculationInput}
         result={result}
         currencySymbol={currency}
+      />
+
+      {/* Confirmation Modal: Reload Initial Template Values */}
+      {showReloadTemplateModal && loadedTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-4 bg-slate-800 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2 font-bold text-sm">
+                <RotateCcw className="w-5 h-5 text-teal-300" />
+                <span>Recharger les valeurs d'origine du modèle ?</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowReloadTemplateModal(false)}
+                className="p-1 text-white/80 hover:text-white rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3 text-xs text-slate-700">
+              <p className="font-semibold text-slate-900">
+                Souhaitez-vous réinitialiser ce calcul avec les valeurs par défaut du modèle « {loadedTemplate.name} » ?
+              </p>
+              <p className="text-slate-500">
+                Vos modifications actuelles sur ce calcul de travail seront annulées. Le modèle enregistré dans votre bibliothèque restera intact.
+              </p>
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setShowReloadTemplateModal(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded-xl transition-colors shadow-2xs cursor-pointer"
+              >
+                Annuler
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  handleApplyTemplate(loadedTemplate.id);
+                  setShowReloadTemplateModal(false);
+                }}
+                className="px-4 py-2 text-xs font-bold text-white bg-teal-600 hover:bg-teal-700 rounded-xl transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>Recharger les valeurs</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* In-App Confirmation Modal for New Blank Calculation */}
+      {showResetModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-4 bg-slate-800 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2 font-bold text-sm">
+                <RotateCcw className="w-5 h-5 text-teal-300" />
+                <span>Démarrer un nouveau calcul ?</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowResetModal(false)}
+                className="p-1 text-white/80 hover:text-white rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3 text-xs text-slate-700">
+              <p className="font-semibold text-slate-900 text-sm">
+                Votre calcul de travail en cours non enregistré sera effacé.
+              </p>
+              <p className="text-slate-500 leading-relaxed">
+                Cette action réinitialisera les lignes de matériaux, main-d'œuvre et frais pour démarrer un nouveau calcul vierge. Vos devis enregistrés dans l'historique et vos modèles de bibliothèque restent conservés.
+              </p>
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setShowResetModal(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded-xl transition-colors shadow-2xs cursor-pointer"
+              >
+                Annuler
+              </button>
+
+              <button
+                type="button"
+                onClick={handleConfirmReset}
+                className="px-4 py-2 text-xs font-bold text-white bg-teal-600 hover:bg-teal-700 rounded-xl transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>Démarrer un nouveau calcul</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Save Calculation as New Custom Template */}
+      {showSaveTemplateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-4 sm:p-5 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <BookmarkPlus className="w-5 h-5 text-teal-600" />
+                <div>
+                  <h3 className="font-bold text-sm sm:text-base text-slate-900">
+                    Enregistrer comme nouveau modèle
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Crée un modèle réutilisable distinct dans votre bibliothèque.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSaveTemplateModal(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmSaveTemplate} className="p-4 sm:p-5 space-y-4 text-xs">
+              <div className="p-3 bg-teal-50/70 rounded-xl border border-teal-200 text-teal-900 space-y-1">
+                <p className="font-bold">Configuration du nouveau modèle :</p>
+                <p className="text-[11px] text-teal-700">
+                  • {materials.length} matière(s) première(s) • {labor.length} tâche(s) MO • Marge {targetProfitPercent}% • Chutes {wastePercent}%
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <label htmlFor="calc-save-tpl-name" className="font-bold text-slate-700 block">Nom du nouveau modèle *</label>
+                <input
+                  id="calc-save-tpl-name"
+                  type="text"
+                  required
+                  placeholder="Ex: Porte d'entrée blindée, Grille antivol standard..."
+                  value={newTemplateName}
+                  onChange={(e) => setNewTemplateName(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-teal-500 font-medium"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label htmlFor="calc-save-tpl-category" className="font-bold text-slate-700 block">Catégorie d'ouvrage</label>
+                <select
+                  id="calc-save-tpl-category"
+                  value={newTemplateCategory}
+                  onChange={(e) => setNewTemplateCategory(e.target.value as any)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-teal-500 font-medium bg-white"
+                >
+                  <option value="metal">Métallerie / Serrurerie / Fer forgé</option>
+                  <option value="bois">Menuiserie Bois</option>
+                  <option value="alu">Menuiserie Aluminium</option>
+                  <option value="autre">Autre structure / Spécialisé</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label htmlFor="calc-save-tpl-desc" className="font-bold text-slate-700 block">Description / Notes d'atelier</label>
+                <textarea
+                  id="calc-save-tpl-desc"
+                  rows={3}
+                  placeholder="Spécifications (sections des tubes, types de fers, accessoires inclus)..."
+                  value={newTemplateDescription}
+                  onChange={(e) => setNewTemplateDescription(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-teal-500"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setShowSaveTemplateModal(false)}
+                  className="px-4 py-2 text-slate-600 font-bold hover:bg-slate-100 rounded-xl cursor-pointer"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-xl shadow-2xs flex items-center gap-1.5 cursor-pointer"
+                >
+                  <BookmarkPlus className="w-4 h-4" />
+                  <span>Enregistrer comme nouveau modèle</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Feature Gate Modal */}
+      <PremiumGateModal
+        isOpen={gateModalOpen}
+        onClose={() => setGateModalOpen(false)}
+        featureKey="advanced_templates"
+        customTitle={`Modèle Professionnel : ${selectedPremiumTemplate?.name || 'Ouvrage Pro'}`}
+        customDescription={`Ce modèle avancé (${selectedPremiumTemplate?.name}) intègre des nomenclatures complètes réservées à l'abonnement AtelierDevis Premium. Les modèles de base restent 100% gratuits.`}
+        onOpenPremiumInfo={() => {
+          if (onOpenPremiumModal) {
+            onOpenPremiumModal();
+          }
+        }}
       />
     </div>
   );

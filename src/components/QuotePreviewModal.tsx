@@ -1,7 +1,6 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import {
   X,
-  Download,
   Printer,
   Share2,
   Copy,
@@ -9,16 +8,16 @@ import {
   FileText,
   Building2,
   User,
-  Calendar,
-  Layers,
   ArrowDownToLine,
-  Crown,
 } from 'lucide-react';
 import { BusinessProfile, Quote, UserEntitlement } from '../types';
 import { formatCurrency, formatDateFrench, formatDateShort } from '../utils/formatters';
-import { downloadQuotePDF, printQuotePDF } from '../utils/pdfGenerator';
-import { buildWhatsAppMessage, shareOnWhatsApp, shareNative } from '../utils/whatsappShare';
+import { downloadQuotePDF } from '../utils/pdfGenerator';
+import { printQuoteDirectly } from '../utils/printQuote';
+import { buildQuoteTextSummary } from '../utils/quoteSharing';
 import { isPremium } from '../licensing/features';
+import { useNotification } from '../context/NotificationContext';
+import { ShareQuoteModal } from './ShareQuoteModal';
 
 interface Props {
   isOpen: boolean;
@@ -39,100 +38,136 @@ export function QuotePreviewModal({
 }: Props) {
   const [copied, setCopied] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [printing, setPrinting] = useState(false);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const quoteSheetRef = useRef<HTMLDivElement>(null);
+  const { showSuccess, showError, showInfo } = useNotification();
 
   if (!isOpen) return null;
 
   const currency = profile.currencySymbol || 'FCFA';
   const userIsPremium = isPremium(entitlement);
+  const hasBusinessName = Boolean(profile.name && profile.name.trim());
+  const businessName = profile.name ? profile.name.trim() : '';
+  const hasCustomerName = Boolean(quote.customer.name && quote.customer.name.trim());
+  const customerName = quote.customer.name ? quote.customer.name.trim() : '';
 
-  const handleCopyText = () => {
-    const text = buildWhatsAppMessage(quote, profile);
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopyText = async () => {
+    try {
+      const text = buildQuoteTextSummary(quote, profile);
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      showSuccess('✓ Texte du devis copié dans le presse-papier !');
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      showError('Échec de la copie.');
+    }
   };
 
   const handleDownload = () => {
     setDownloading(true);
+    showSuccess('Génération et téléchargement du PDF A4...');
     try {
       downloadQuotePDF(quote, profile, entitlement);
+    } catch (err) {
+      console.error('Erreur téléchargement PDF:', err);
+      showError('Échec lors de la génération du document PDF.');
     } finally {
       setTimeout(() => setDownloading(false), 500);
     }
   };
 
-  const handlePrint = () => {
-    printQuotePDF(quote, profile, entitlement);
-  };
-
-
-  const handleWhatsApp = () => {
-    shareOnWhatsApp(quote, profile);
-  };
-
-  const handleNativeShare = async () => {
-    const shared = await shareNative(quote, profile);
-    if (!shared) {
-      handleWhatsApp();
+  const handlePrint = async () => {
+    setPrinting(true);
+    showInfo("Lancement de l'impression A4...");
+    try {
+      const printed = await printQuoteDirectly(quote, profile, entitlement);
+      if (!printed) {
+        showError("L'impression directe n'a pas pu être déclenchée. Vous pouvez télécharger le PDF pour l'imprimer.");
+      }
+    } catch (err) {
+      console.error('Erreur impression:', err);
+      showError("Échec lors du lancement de l'impression. Téléchargez le PDF pour imprimer.");
+    } finally {
+      setTimeout(() => setPrinting(false), 400);
     }
   };
 
+  const workshopAddress = [
+    profile.address?.trim(),
+    profile.city?.trim(),
+    profile.country?.trim(),
+  ].filter(Boolean).join(', ');
+
+  const customerAddress = [
+    quote.customer.address?.trim(),
+    quote.customer.city?.trim(),
+  ].filter(Boolean).join(' - ');
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/70 backdrop-blur-xs animate-in fade-in duration-150">
+    <>
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/70 backdrop-blur-xs animate-in fade-in duration-150 print-modal-container">
       <div className="relative w-full max-w-4xl max-h-[95vh] bg-white rounded-xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden">
-        {/* Header Action Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-3 bg-slate-900 text-white border-b border-slate-800">
-          <div className="flex items-center gap-2">
-            <FileText className="w-5 h-5 text-teal-400" />
-            <span className="font-bold text-sm sm:text-base">
-              Aperçu du Devis N° {quote.quoteNumber}
+        {/* Header Action Bar (Hidden on print) */}
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 sm:px-6 py-3 bg-slate-900 text-white border-b border-slate-800 no-print">
+          <div className="flex items-center gap-2 min-w-0">
+            <FileText className="w-5 h-5 text-teal-400 shrink-0" />
+            <span className="font-bold text-xs sm:text-base truncate">
+              Aperçu Devis N° {quote.quoteNumber}
             </span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-teal-900/80 text-teal-300 font-medium border border-teal-700/50">
+            <span className="text-[11px] px-2 py-0.5 rounded-full bg-teal-900/80 text-teal-300 font-medium border border-teal-700/50 shrink-0">
               {quote.status}
             </span>
           </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
             <button
+              type="button"
               onClick={handleDownload}
               disabled={downloading}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-teal-600 hover:bg-teal-700 rounded-lg transition-colors shadow-xs"
-              title="Télécharger le PDF"
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-semibold text-white bg-teal-600 hover:bg-teal-700 rounded-lg transition-colors shadow-xs"
+              title="Télécharger le PDF A4"
             >
               <ArrowDownToLine className="w-3.5 h-3.5" />
-              <span>{downloading ? 'Génération...' : 'Télécharger PDF'}</span>
+              <span>{downloading ? 'PDF...' : 'Télécharger PDF'}</span>
             </button>
 
             <button
-              onClick={handleWhatsApp}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-950 bg-emerald-400 hover:bg-emerald-300 rounded-lg transition-colors shadow-xs"
-              title="Envoyer par WhatsApp"
+              type="button"
+              onClick={handlePrint}
+              disabled={printing}
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-semibold text-slate-100 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors border border-slate-700 shadow-xs"
+              title="Imprimer le devis (A4)"
+            >
+              <Printer className="w-3.5 h-3.5 text-teal-400" />
+              <span>{printing ? 'Impression...' : 'Imprimer'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShareModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-semibold text-emerald-950 bg-emerald-400 hover:bg-emerald-300 rounded-lg transition-colors shadow-xs"
+              title="Partager le devis (PDF, Image, Texte)"
             >
               <Share2 className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">WhatsApp</span>
+              <span>Partager</span>
             </button>
 
             <button
-              onClick={handlePrint}
-              className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors border border-slate-700"
-              title="Imprimer"
-            >
-              <Printer className="w-3.5 h-3.5" />
-              <span>Imprimer</span>
-            </button>
-
-            <button
+              type="button"
               onClick={handleCopyText}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors"
+              className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors"
               title="Copier le résumé texte"
             >
               {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-              <span className="hidden sm:inline">{copied ? 'Copié !' : 'Copier'}</span>
+              <span>{copied ? 'Copié !' : 'Copier'}</span>
             </button>
 
             <button
+              type="button"
               onClick={onClose}
               className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors ml-1"
+              title="Fermer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -140,24 +175,29 @@ export function QuotePreviewModal({
         </div>
 
         {/* Document Body (Print Sheet Simulation) */}
-        <div className="flex-1 p-4 sm:p-8 overflow-y-auto bg-slate-100 flex justify-center">
-          <div className="w-full max-w-[210mm] min-h-[297mm] bg-white rounded-lg shadow-md border border-slate-200 p-6 sm:p-10 flex flex-col justify-between text-slate-800 font-sans">
+        <div className="flex-1 p-3 sm:p-8 overflow-y-auto bg-slate-100 flex justify-center">
+          <div
+            ref={quoteSheetRef}
+            className="w-full max-w-[210mm] min-h-[297mm] bg-white rounded-lg shadow-md border border-slate-200 p-6 sm:p-10 flex flex-col justify-between text-slate-800 font-sans print-document-sheet"
+          >
             <div>
               {/* Header */}
               <div className="flex flex-col sm:flex-row justify-between items-start gap-4 pb-6 border-b border-slate-200">
                 <div className="space-y-1">
-                  {profile.logoUrl && (
+                  {profile.logoUrl && profile.logoUrl.startsWith('data:image') && (
                     <img
                       src={profile.logoUrl}
-                      alt="Logo"
+                      alt="Logo atelier"
                       className="h-12 w-auto max-w-[160px] object-contain mb-2"
                     />
                   )}
-                  <h1 className="text-xl font-bold text-slate-900 tracking-tight">
-                    {profile.name}
-                  </h1>
-                  {profile.tagline && (
-                    <p className="text-xs text-slate-600 italic">{profile.tagline}</p>
+                  {hasBusinessName && (
+                    <h1 className="text-xl font-bold text-slate-900 tracking-tight">
+                      {businessName}
+                    </h1>
+                  )}
+                  {profile.tagline && profile.tagline.trim() && (
+                    <p className="text-xs text-slate-600 italic">{profile.tagline.trim()}</p>
                   )}
                 </div>
 
@@ -185,13 +225,22 @@ export function QuotePreviewModal({
                     <Building2 className="w-3.5 h-3.5 text-teal-700" />
                     ÉMETTEUR
                   </div>
-                  {profile.phone && <div><strong>Tél :</strong> {profile.phone}</div>}
-                  {profile.whatsapp && <div><strong>WhatsApp :</strong> {profile.whatsapp}</div>}
-                  {profile.email && <div><strong>Email :</strong> {profile.email}</div>}
-                  {(profile.address || profile.city) && (
-                    <div><strong>Adresse :</strong> {profile.address}, {profile.city} ({profile.country})</div>
+                  {hasBusinessName && <div className="font-semibold text-slate-800">{businessName}</div>}
+                  {profile.phone && profile.phone.trim() && (
+                    <div><strong>Tél :</strong> {profile.phone.trim()}</div>
                   )}
-                  {profile.taxId && <div><strong>RCCM / NIF :</strong> {profile.taxId}</div>}
+                  {profile.whatsapp && profile.whatsapp.trim() && (
+                    <div><strong>WhatsApp :</strong> {profile.whatsapp.trim()}</div>
+                  )}
+                  {profile.email && profile.email.trim() && (
+                    <div><strong>Email :</strong> {profile.email.trim()}</div>
+                  )}
+                  {workshopAddress && (
+                    <div><strong>Adresse :</strong> {workshopAddress}</div>
+                  )}
+                  {profile.taxId && profile.taxId.trim() && (
+                    <div><strong>RCCM / NIF :</strong> {profile.taxId.trim()}</div>
+                  )}
                 </div>
 
                 {/* Customer */}
@@ -200,11 +249,17 @@ export function QuotePreviewModal({
                     <User className="w-3.5 h-3.5 text-teal-700" />
                     DESTINATAIRE
                   </div>
-                  <div className="text-sm font-bold text-slate-900">{quote.customer.name || 'Client particulier'}</div>
-                  {quote.customer.phone && <div><strong>Tél :</strong> {quote.customer.phone}</div>}
-                  {quote.customer.email && <div><strong>Email :</strong> {quote.customer.email}</div>}
-                  {(quote.customer.address || quote.customer.city) && (
-                    <div><strong>Adresse :</strong> {quote.customer.address} {quote.customer.city && `- ${quote.customer.city}`}</div>
+                  {hasCustomerName && (
+                    <div className="text-sm font-bold text-slate-900">{customerName}</div>
+                  )}
+                  {quote.customer.phone && quote.customer.phone.trim() && (
+                    <div><strong>Tél :</strong> {quote.customer.phone.trim()}</div>
+                  )}
+                  {quote.customer.email && quote.customer.email.trim() && (
+                    <div><strong>Email :</strong> {quote.customer.email.trim()}</div>
+                  )}
+                  {customerAddress && (
+                    <div><strong>Adresse :</strong> {customerAddress}</div>
                   )}
                 </div>
               </div>
@@ -213,11 +268,11 @@ export function QuotePreviewModal({
               <div className="py-4">
                 <div className="p-3 bg-teal-50/60 rounded-lg border border-teal-200/80">
                   <div className="text-xs font-bold text-teal-900">
-                    OBJET : {quote.projectTitle}
+                    OBJET : {quote.projectTitle || 'DEVIS'}
                   </div>
-                  {quote.projectDescription && (
+                  {quote.projectDescription && quote.projectDescription.trim() && (
                     <div className="text-xs text-teal-800 mt-1 whitespace-pre-line">
-                      {quote.projectDescription}
+                      {quote.projectDescription.trim()}
                     </div>
                   )}
                 </div>
@@ -261,26 +316,28 @@ export function QuotePreviewModal({
             </div>
 
             {/* Bottom Summary & Signatures */}
-            <div className="pt-6 space-y-6">
+            <div className="pt-6 space-y-6 print-avoid-break">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 items-start">
                 {/* Notes & Payment terms */}
                 <div className="text-xs space-y-2 text-slate-600">
-                  <div className="font-bold text-slate-800 uppercase tracking-wider text-[11px]">
-                    Modalités de règlement & Notes
-                  </div>
-                  {quote.paymentTerms && (
+                  {((quote.paymentTerms && quote.paymentTerms.trim()) || (quote.notes && quote.notes.trim()) || (profile.footerNotes && profile.footerNotes.trim())) && (
+                    <div className="font-bold text-slate-800 uppercase tracking-wider text-[11px]">
+                      Modalités de règlement & Notes
+                    </div>
+                  )}
+                  {quote.paymentTerms && quote.paymentTerms.trim() && (
                     <p className="p-2 bg-slate-50 rounded border border-slate-200">
-                      <strong>Paiement :</strong> {quote.paymentTerms}
+                      <strong>Paiement :</strong> {quote.paymentTerms.trim()}
                     </p>
                   )}
-                  {quote.notes && (
+                  {quote.notes && quote.notes.trim() && (
                     <p className="italic text-slate-500">
-                      {quote.notes}
+                      {quote.notes.trim()}
                     </p>
                   )}
-                  {profile.footerNotes && (
+                  {profile.footerNotes && profile.footerNotes.trim() && (
                     <p className="text-[11px] text-slate-400">
-                      {profile.footerNotes}
+                      {profile.footerNotes.trim()}
                     </p>
                   )}
                 </div>
@@ -325,7 +382,9 @@ export function QuotePreviewModal({
               <div className="grid grid-cols-2 gap-6 pt-6 border-t border-slate-200 text-xs">
                 <div className="space-y-12">
                   <div>
-                    <span className="font-bold text-slate-800">Pour {profile.name}</span>
+                    <span className="font-bold text-slate-800">
+                      {hasBusinessName ? `Pour ${businessName}` : "Pour l'Émetteur"}
+                    </span>
                     <p className="text-[11px] text-slate-500">Cachet & signature</p>
                   </div>
                   <div className="border-b border-dashed border-slate-300 w-4/5"></div>
@@ -343,7 +402,11 @@ export function QuotePreviewModal({
               {/* Attribution footer */}
               <div className="pt-4 text-center border-t border-slate-100 text-[10px] text-slate-400">
                 {userIsPremium ? (
-                  <span>Document officiel d'atelier certifié conforme • {profile.name}</span>
+                  <span>
+                    {hasBusinessName
+                      ? `Document officiel d'atelier certifié conforme • ${businessName}`
+                      : "Document officiel d'atelier certifié conforme"}
+                  </span>
                 ) : (
                   <span>Document généré avec AtelierDevis (Version Gratuite) • www.atelierdevis.app</span>
                 )}
@@ -352,8 +415,8 @@ export function QuotePreviewModal({
           </div>
         </div>
 
-        {/* Footer controls */}
-        <div className="px-6 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between flex-wrap gap-2">
+        {/* Footer controls (Hidden on print) */}
+        <div className="px-4 sm:px-6 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between flex-wrap gap-2 no-print">
           {onEdit && (
             <button
               onClick={() => {
@@ -368,6 +431,7 @@ export function QuotePreviewModal({
 
           <div className="flex items-center gap-2 ml-auto">
             <button
+              type="button"
               onClick={onClose}
               className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors"
             >
@@ -377,5 +441,17 @@ export function QuotePreviewModal({
         </div>
       </div>
     </div>
+
+    {shareModalOpen && (
+      <ShareQuoteModal
+        isOpen={shareModalOpen}
+        quote={quote}
+        profile={profile}
+        entitlement={entitlement}
+        onClose={() => setShareModalOpen(false)}
+      />
+    )}
+  </>
   );
 }
+

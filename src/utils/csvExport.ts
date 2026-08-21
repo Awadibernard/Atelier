@@ -16,28 +16,32 @@ export function exportQuotesToCSV(quotes: Quote[], profile: BusinessProfile): vo
     'Email Client',
     'Titre du Projet',
     'Statut',
-    `Total (${currency})`,
+    `Sous-total (${currency})`,
     `Remise (%)`,
+    `Total Final (${currency})`,
     `Acompte (${currency})`,
     `Solde (${currency})`,
     'Modalités de Paiement',
   ];
 
   const rows = quotes.map((q) => {
+    const sanitizeText = (txt?: string) => `"${(txt || '').replace(/"/g, '""').replace(/[\r\n]+/g, ' ')}"`;
+
     return [
       `"${q.quoteNumber}"`,
       `"${formatDateShort(q.createdAt)}"`,
       `"${formatDateShort(q.validUntil)}"`,
-      `"${(q.customer.name || '').replace(/"/g, '""')}"`,
-      `"${(q.customer.phone || '').replace(/"/g, '""')}"`,
-      `"${(q.customer.email || '').replace(/"/g, '""')}"`,
-      `"${(q.projectTitle || '').replace(/"/g, '""')}"`,
+      sanitizeText(q.customer.name),
+      sanitizeText(q.customer.phone),
+      sanitizeText(q.customer.email),
+      sanitizeText(q.projectTitle),
       `"${q.status}"`,
-      q.finalTotal,
+      q.subtotal,
       q.discountPercent || 0,
+      q.finalTotal,
       q.depositAmount || 0,
       q.balanceAmount || 0,
-      `"${(q.paymentTerms || '').replace(/"/g, '""')}"`,
+      sanitizeText(q.paymentTerms),
     ];
   });
 

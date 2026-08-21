@@ -8,6 +8,7 @@ import {
   Edit,
   Eye,
   Download,
+  Printer,
   Share2,
   FileText,
   Clock,
@@ -25,12 +26,14 @@ import {
 import { BusinessProfile, Quote, QuoteStatus, UserEntitlement } from '../types';
 import { formatCurrency, formatDateFrench, formatDateShort } from '../utils/formatters';
 import { downloadQuotePDF } from '../utils/pdfGenerator';
-import { shareOnWhatsApp } from '../utils/whatsappShare';
+import { printQuoteDirectly } from '../utils/printQuote';
 import { exportQuotesToCSV } from '../utils/csvExport';
 import { QuotePreviewModal } from './QuotePreviewModal';
+import { ShareQuoteModal } from './ShareQuoteModal';
 import { checkQuoteQuota, isPremium, FREE_QUOTES_LIMIT } from '../licensing/features';
 import { PremiumBadge } from './licensing/PremiumBadge';
 import { PremiumGateModal } from './licensing/PremiumGateModal';
+import { useNotification } from '../context/NotificationContext';
 
 interface Props {
   quotes: Quote[];
@@ -56,15 +59,31 @@ export function QuoteHistory({
   const currency = profile.currencySymbol || 'FCFA';
   const userIsPremium = isPremium(entitlement);
   const quota = checkQuoteQuota(entitlement, quotes.length);
+  const { showSuccess, showInfo } = useNotification();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [previewingQuote, setPreviewingQuote] = useState<Quote | null>(null);
+  const [sharingQuote, setSharingQuote] = useState<Quote | null>(null);
 
   // Gating modals
   const [gateModalOpen, setGateModalOpen] = useState(false);
   const [gatedFeatureTitle, setGatedFeatureTitle] = useState('');
   const [gatedFeatureDesc, setGatedFeatureDesc] = useState('');
+
+  const handlePrintQuote = async (quote: Quote) => {
+    showInfo("Lancement de l'impression A4...");
+    try {
+      const printed = await printQuoteDirectly(quote, profile, entitlement);
+      if (!printed) {
+        showInfo("Impression directe non disponible. Téléchargement du PDF...");
+        downloadQuotePDF(quote, profile, entitlement);
+      }
+    } catch (err) {
+      console.error('Erreur impression:', err);
+      downloadQuotePDF(quote, profile, entitlement);
+    }
+  };
 
   const handleCreateNewQuoteAttempt = () => {
     if (!quota.canCreate) {
@@ -88,6 +107,7 @@ export function QuoteHistory({
       return;
     }
     onDuplicateQuote(id);
+    showSuccess('✓ Devis dupliqué avec succès.');
   };
 
   const handleExportCSVAttempt = () => {
@@ -100,6 +120,7 @@ export function QuoteHistory({
       return;
     }
     exportQuotesToCSV(quotes, profile);
+    showSuccess('✓ Exportation CSV téléchargée avec succès.');
   };
 
 
@@ -413,17 +434,27 @@ export function QuoteHistory({
                   </button>
 
                   <button
-                    onClick={() => downloadQuotePDF(quote, profile)}
+                    onClick={() => downloadQuotePDF(quote, profile, entitlement)}
                     className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-200 rounded-lg transition-colors"
-                    title="Télécharger PDF"
+                    title="Télécharger PDF (A4)"
                   >
                     <Download className="w-4 h-4" />
                   </button>
 
                   <button
-                    onClick={() => shareOnWhatsApp(quote, profile)}
+                    type="button"
+                    onClick={() => handlePrintQuote(quote)}
+                    className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-200 rounded-lg transition-colors"
+                    title="Imprimer directement (A4)"
+                  >
+                    <Printer className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSharingQuote(quote)}
                     className="p-1.5 text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors"
-                    title="Partager sur WhatsApp"
+                    title="Partager le devis (PDF, Image, Texte)"
                   >
                     <Share2 className="w-4 h-4" />
                   </button>
@@ -448,9 +479,10 @@ export function QuoteHistory({
                     onClick={() => {
                       if (window.confirm(`Supprimer définitivement le devis ${quote.quoteNumber} ?`)) {
                         onDeleteQuote(quote.id);
+                        showInfo(`Devis ${quote.quoteNumber} supprimé.`);
                       }
                     }}
-                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
                     title="Supprimer"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -469,10 +501,22 @@ export function QuoteHistory({
           onClose={() => setPreviewingQuote(null)}
           quote={previewingQuote}
           profile={profile}
+          entitlement={entitlement}
           onEdit={() => {
             onEditQuote(previewingQuote);
             setPreviewingQuote(null);
           }}
+        />
+      )}
+
+      {/* Quote Share Modal */}
+      {sharingQuote && (
+        <ShareQuoteModal
+          isOpen={Boolean(sharingQuote)}
+          quote={sharingQuote}
+          profile={profile}
+          entitlement={entitlement}
+          onClose={() => setSharingQuote(null)}
         />
       )}
 
