@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import {
   Calculator,
   FileText,
@@ -63,6 +63,16 @@ export function HomeView({
 
   const [gateModalOpen, setGateModalOpen] = useState(false);
   const [selectedPremiumTemplate, setSelectedPremiumTemplate] = useState<WorkshopTemplate | null>(null);
+
+  // Filter templates based on showSystemTemplates user preference
+  const showSysTemplates =
+    profile.showSystemTemplates !== false && profile.showPredefinedTemplates !== false;
+  const visibleTemplates = useMemo(() => {
+    if (!showSysTemplates) {
+      return templates.filter((t) => t.isCustom);
+    }
+    return templates;
+  }, [templates, showSysTemplates]);
 
   const handleAttemptUseTemplate = (tpl: WorkshopTemplate) => {
     if (tpl.isPremiumOnly && !userIsPremium) {
@@ -219,7 +229,7 @@ export function HomeView({
             Modèles Prêts à l'emploi
           </div>
           <div className="text-2xl sm:text-3xl font-black font-mono text-slate-900 mt-1">
-            {templates.length}
+            {visibleTemplates.length}
           </div>
           <div className="text-[11px] text-slate-400 mt-1">
             Portes, fenêtres, portails, grilles...
@@ -240,13 +250,13 @@ export function HomeView({
               onClick={() => onNavigate('templates')}
               className="text-xs text-teal-700 hover:text-teal-900 font-semibold inline-flex items-center gap-1"
             >
-              <span>Voir tous ({templates.length})</span>
+              <span>Voir tous ({visibleTemplates.length})</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {templates.slice(0, 4).map((tpl) => {
+            {visibleTemplates.slice(0, 4).map((tpl) => {
               const isGated = tpl.isPremiumOnly && !userIsPremium;
               return (
                 <div

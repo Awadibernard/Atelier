@@ -25,10 +25,15 @@ import {
   Zap,
   Crop,
   X,
+  BookmarkCheck,
+  Package,
+  Layers,
+  SlidersHorizontal,
 } from 'lucide-react';
-import { BusinessProfile, RoundingStep, UserEntitlement } from '../types';
+import { BusinessProfile, RoundingStep, UserEntitlement, LogoEditSettings, AppTab } from '../types';
 import { sanitizeNumber } from '../engine/calculator';
 import { runCalculationTests, TestResult } from '../engine/calculator.test';
+import { runBackupTests, BackupTestResult } from '../storage/backupEngine.test';
 import { isPremium } from '../licensing/features';
 import {
   createDefaultFreeEntitlement,
@@ -36,8 +41,12 @@ import {
 } from '../licensing/licenseVerifier';
 import { PremiumBadge } from './licensing/PremiumBadge';
 import { formatDateFrench } from '../utils/formatters';
-import { DEFAULT_PROFILE } from '../storage/db';
+import { DEFAULT_PROFILE, getDbSnapshot, applyDbSnapshot } from '../storage/db';
 import { LogoEditorModal } from './LogoEditorModal';
+import { ExportModal } from './ExportModal';
+import { ImportModal } from './ImportModal';
+import { CurrentDbSnapshot } from '../storage/backupEngine';
+import { ImportExecutionResult } from '../types';
 import { useNotification } from '../context/NotificationContext';
 import { focusAndScrollToField } from '../utils/formValidation';
 
@@ -50,6 +59,8 @@ interface Props {
   entitlement?: UserEntitlement;
   onUpdateEntitlement?: (entitlement: UserEntitlement) => void;
   onOpenPremiumModal?: () => void;
+  onNavigate?: (tab: AppTab) => void;
+  onRestartTour?: () => void;
 }
 
 export function SettingsView({
@@ -61,64 +72,166 @@ export function SettingsView({
   entitlement,
   onUpdateEntitlement,
   onOpenPremiumModal,
+  onNavigate,
+  onRestartTour,
 }: Props) {
   const [formData, setFormData] = useState<BusinessProfile>({ ...profile });
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [resetSuccess, setResetSuccess] = useState(false);
   const [importStatus, setImportStatus] = useState<{ success: boolean; message: string } | null>(null);
 
   // In-app modal states
   const [showFactoryResetModal, setShowFactoryResetModal] = useState(false);
+  const [isSystemDataModalOpen, setIsSystemDataModalOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [cropModalSrc, setCropModalSrc] = useState<string | null>(null);
+  const [cropModalInitialSettings, setCropModalInitialSettings] = useState<LogoEditSettings | undefined>(undefined);
   const [isCropModalOpen, setIsCropModalOpen] = useState(false);
 
   useEffect(() => {
     setFormData({ ...profile });
   }, [profile]);
 
+  const handleImportSuccess = (nextState: CurrentDbSnapshot, result: ImportExecutionResult) => {
+    applyDbSnapshot(nextState);
+    setFormData({ ...nextState.profile });
+    onSaveProfile(nextState.profile);
+    setImportStatus({ success: true, message: result.message });
+    showSuccess(result.message);
+    setTimeout(() => {
+      window.location.reload();
+    }, 1000);
+  };
+
   const userIsPremium = isPremium(entitlement);
 
   // Test Runner state
   const [testResults, setTestResults] = useState<{ results: TestResult[]; allPassed: boolean } | null>(null);
+  const [backupTestResults, setBackupTestResults] = useState<{
+    results: BackupTestResult[];
+    allPassed: boolean;
+  } | null>(null);
 
   const { showSuccess, showWarning, showError, showInfo } = useNotification();
+
+  const handleToggleSystemSetting = (
+    setting: 'templates' | 'templateCategories' | 'materials' | 'materialCategories'
+  ) => {
+    let updated: BusinessProfile = { ...formData };
+    let message = '';
+
+    if (setting === 'templates') {
+      const current =
+        formData.showSystemTemplates !== false && formData.showPredefinedTemplates !== false;
+      const next = !current;
+      updated = {
+        ...updated,
+        showSystemTemplates: next,
+        showPredefinedTemplates: next,
+      };
+      message = next ? '✓ Modèles système activés.' : '✓ Modèles système masqués.';
+    } else if (setting === 'templateCategories') {
+      const current =
+        formData.showSystemTemplateCategories !== false &&
+        formData.showPredefinedTemplateCategories !== false;
+      const next = !current;
+      updated = {
+        ...updated,
+        showSystemTemplateCategories: next,
+        showPredefinedTemplateCategories: next,
+      };
+      message = next
+        ? '✓ Catégories de modèles système activées.'
+        : '✓ Catégories de modèles système masquées.';
+    } else if (setting === 'materials') {
+      const current =
+        formData.showSystemMaterials !== false && formData.showPredefinedMaterials !== false;
+      const next = !current;
+      updated = {
+        ...updated,
+        showSystemMaterials: next,
+        showPredefinedMaterials: next,
+      };
+      message = next ? '✓ Matériaux système activés.' : '✓ Matériaux système masqués.';
+    } else if (setting === 'materialCategories') {
+      const current =
+        formData.showSystemMaterialCategories !== false &&
+        formData.showPredefinedMaterialCategories !== false;
+      const next = !current;
+      updated = {
+        ...updated,
+        showSystemMaterialCategories: next,
+        showPredefinedMaterialCategories: next,
+      };
+      message = next
+        ? '✓ Catégories de matériaux système activées.'
+        : '✓ Catégories de matériaux système masquées.';
+    }
+
+    setFormData(updated);
+    onSaveProfile(updated);
+    showSuccess(message);
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
 
+  const handleFieldChange = (field: keyof BusinessProfile, value: any, fieldDomId?: string) => {
+    setFormData((prev) => ({ ...prev, [field]: value }));
+    if (fieldDomId && validationErrors[fieldDomId]) {
+      let isInvalid = false;
+      if (field === 'name' && !String(value).trim()) isInvalid = true;
+      if (field === 'defaultMarginPercent' && (Number(value) < 0 || Number(value) >= 100)) isInvalid = true;
+      if (field === 'defaultWastePercent' && Number(value) < 0) isInvalid = true;
+      if (field === 'defaultLaborRate' && Number(value) < 0) isInvalid = true;
+      if (field === 'defaultValidityDays' && Number(value) <= 0) isInvalid = true;
+
+      if (!isInvalid) {
+        setValidationErrors((prev) => {
+          const next = { ...prev };
+          delete next[fieldDomId];
+          return next;
+        });
+      }
+    }
+  };
+
   const handleSave = (e: FormEvent) => {
     e.preventDefault();
 
-    if (!formData.name.trim()) {
-      showError("Veuillez renseigner le nom de l'atelier ou entreprise.");
-      focusAndScrollToField('settings-company-name');
-      return;
+    const errors: Record<string, string> = {};
+
+    if (!formData.name?.trim()) {
+      errors['settings-company-name'] = "Veuillez renseigner le nom de l'atelier ou entreprise.";
     }
 
     if (formData.defaultMarginPercent < 0 || formData.defaultMarginPercent >= 100) {
-      showError("La marge par défaut doit être comprise entre 0% et 99%.");
-      focusAndScrollToField('settings-default-margin');
-      return;
+      errors['settings-default-margin'] = "La marge par défaut doit être comprise entre 0% et 99%.";
     }
 
     if (formData.defaultWastePercent < 0) {
-      showError("Le taux de perte par défaut ne peut pas être négatif.");
-      focusAndScrollToField('settings-default-waste');
-      return;
+      errors['settings-default-waste'] = "Le taux de perte par défaut ne peut pas être négatif.";
     }
 
     if (formData.defaultLaborRate < 0) {
-      showError("Le tarif horaire moyen par défaut ne peut pas être négatif.");
-      focusAndScrollToField('settings-default-labor-rate');
-      return;
+      errors['settings-default-labor-rate'] = "Le tarif horaire moyen par défaut ne peut pas être négatif.";
     }
 
     if (formData.defaultValidityDays <= 0) {
-      showError("La durée de validité des devis doit être supérieure à 0 jour.");
-      focusAndScrollToField('settings-default-validity');
+      errors['settings-default-validity'] = "La durée de validité des devis doit être supérieure à 0 jour.";
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setValidationErrors(errors);
+      const firstKey = Object.keys(errors)[0];
+      showError(errors[firstKey]);
+      focusAndScrollToField(firstKey);
       return;
     }
 
+    setValidationErrors({});
     onSaveProfile(formData);
     setSaveSuccess(true);
     showSuccess('✓ Paramètres de l\'atelier enregistrés avec succès.');
@@ -133,6 +246,7 @@ export function SettingsView({
     reader.onload = () => {
       if (typeof reader.result === 'string') {
         setCropModalSrc(reader.result);
+        setCropModalInitialSettings(undefined); // Fresh upload uses default parameters
         setIsCropModalOpen(true);
       }
     };
@@ -140,20 +254,37 @@ export function SettingsView({
     e.target.value = '';
   };
 
-  const handleApplyCroppedLogo = (croppedDataUrl: string) => {
-    setFormData((prev) => ({ ...prev, logoUrl: croppedDataUrl }));
+  const handleApplyCroppedLogo = (
+    croppedDataUrl: string,
+    editSettings: LogoEditSettings,
+    originalSrc: string
+  ) => {
+    setFormData((prev) => ({
+      ...prev,
+      logoUrl: croppedDataUrl,
+      logoOriginalUrl: originalSrc,
+      logoEditSettings: editSettings,
+    }));
     showSuccess('Logo de l\'atelier mis à jour.');
   };
 
   const handleOpenExistingCrop = () => {
-    if (formData.logoUrl) {
-      setCropModalSrc(formData.logoUrl);
+    // Prefer original uncropped source image, fallback to rendered logoUrl for legacy profiles
+    const srcToEdit = formData.logoOriginalUrl || formData.logoUrl;
+    if (srcToEdit) {
+      setCropModalSrc(srcToEdit);
+      setCropModalInitialSettings(formData.logoEditSettings);
       setIsCropModalOpen(true);
     }
   };
 
   const handleRemoveLogo = () => {
-    setFormData((prev) => ({ ...prev, logoUrl: undefined }));
+    setFormData((prev) => ({
+      ...prev,
+      logoUrl: undefined,
+      logoOriginalUrl: undefined,
+      logoEditSettings: undefined,
+    }));
     showInfo('Logo retiré.');
   };
 
@@ -162,8 +293,10 @@ export function SettingsView({
     setFormData({ ...DEFAULT_PROFILE });
     setShowFactoryResetModal(false);
     setResetSuccess(true);
-    showWarning('Données réinitialisées aux valeurs d\'usine.');
-    setTimeout(() => setResetSuccess(false), 4000);
+    showSuccess('✓ Données réinitialisées aux valeurs d\'usine.');
+    if (onNavigate) {
+      onNavigate('home');
+    }
   };
 
   const handleFileImport = (e: ChangeEvent<HTMLInputElement>) => {
@@ -188,6 +321,11 @@ export function SettingsView({
   const handleRunTests = () => {
     const res = runCalculationTests();
     setTestResults(res);
+  };
+
+  const handleRunBackupTests = () => {
+    const res = runBackupTests();
+    setBackupTestResults(res);
   };
 
   return (
@@ -228,7 +366,20 @@ export function SettingsView({
             </div>
 
             <div className="space-y-1.5 text-xs">
-              <span className="font-bold text-slate-700 block">Logo de l'atelier (pour les PDF)</span>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-slate-700 block">Logo de l'atelier (pour les PDF)</span>
+                {formData.logoUrl && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-teal-50 text-teal-800 font-semibold border border-teal-200">
+                    {formData.logoEditSettings?.maskShape === 'circle'
+                      ? 'Masque Cercle'
+                      : formData.logoEditSettings?.maskShape === 'rounded'
+                      ? 'Masque Arrondi'
+                      : formData.logoEditSettings?.maskShape === 'square'
+                      ? 'Masque Carré'
+                      : 'Format Original'}
+                  </span>
+                )}
+              </div>
               <div className="flex flex-wrap items-center gap-2">
                 <input
                   type="file"
@@ -243,7 +394,7 @@ export function SettingsView({
                   className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-semibold transition-colors flex items-center gap-1.5"
                 >
                   <Upload className="w-3.5 h-3.5" />
-                  <span>{formData.logoUrl ? 'Changer le logo' : 'Téléverser un logo'}</span>
+                  <span>{formData.logoUrl ? 'Changer l\'image' : 'Téléverser un logo'}</span>
                 </button>
                 {formData.logoUrl && (
                   <>
@@ -251,7 +402,7 @@ export function SettingsView({
                       type="button"
                       onClick={handleOpenExistingCrop}
                       className="px-3 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-lg font-semibold transition-colors flex items-center gap-1.5"
-                      title="Ajuster le cadrage ou la forme"
+                      title="Ajuster le cadrage, zoom ou changer la forme sans perte de qualité"
                     >
                       <Crop className="w-3.5 h-3.5 text-teal-600" />
                       <span>Cadrer / Masque</span>
@@ -267,7 +418,9 @@ export function SettingsView({
                   </>
                 )}
               </div>
-              <p className="text-[11px] text-slate-400">Format PNG ou JPG, recadrage carré, cercle ou arrondi disponible.</p>
+              <p className="text-[11px] text-slate-400">
+                Édition non destructive : l'image originale est conservée pour vous permettre de changer de masque à volonté sans dégradation.
+              </p>
             </div>
           </div>
 
@@ -281,9 +434,19 @@ export function SettingsView({
                 type="text"
                 required
                 value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg font-bold text-slate-900 focus:bg-white"
+                onChange={(e) => handleFieldChange('name', e.target.value, 'settings-company-name')}
+                className={`w-full px-3 py-2 bg-slate-50 border rounded-lg font-bold text-slate-900 focus:bg-white transition-colors ${
+                  validationErrors['settings-company-name']
+                    ? 'border-red-500 ring-1 ring-red-500 focus:border-red-500 focus:ring-red-500'
+                    : 'border-slate-300 focus:ring-teal-500'
+                }`}
               />
+              {validationErrors['settings-company-name'] && (
+                <p className="mt-1 text-xs text-red-600 font-medium flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                  <span>{validationErrors['settings-company-name']}</span>
+                </p>
+              )}
             </div>
 
             <div>
@@ -294,7 +457,7 @@ export function SettingsView({
                 id="settings-tagline"
                 type="text"
                 value={formData.tagline || ''}
-                onChange={(e) => setFormData({ ...formData, tagline: e.target.value })}
+                onChange={(e) => handleFieldChange('tagline', e.target.value)}
                 placeholder="Ex: Soudure, Ferronnerie & Menuiserie métallique"
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-900 focus:bg-white"
               />
@@ -308,7 +471,7 @@ export function SettingsView({
                 id="settings-phone"
                 type="tel"
                 value={formData.phone || ''}
-                onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                onChange={(e) => handleFieldChange('phone', e.target.value)}
                 placeholder="+221 77 000 00 00"
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg font-mono text-slate-900 focus:bg-white"
               />
@@ -322,7 +485,7 @@ export function SettingsView({
                 id="settings-whatsapp"
                 type="tel"
                 value={formData.whatsapp || ''}
-                onChange={(e) => setFormData({ ...formData, whatsapp: e.target.value })}
+                onChange={(e) => handleFieldChange('whatsapp', e.target.value)}
                 placeholder="+221 77 000 00 00"
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg font-mono text-slate-900 focus:bg-white"
               />
@@ -336,7 +499,7 @@ export function SettingsView({
                 id="settings-email"
                 type="email"
                 value={formData.email || ''}
-                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                onChange={(e) => handleFieldChange('email', e.target.value)}
                 placeholder="contact@atelier.com"
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-900 focus:bg-white"
               />
@@ -350,7 +513,7 @@ export function SettingsView({
                 id="settings-tax-id"
                 type="text"
                 value={formData.taxId || ''}
-                onChange={(e) => setFormData({ ...formData, taxId: e.target.value })}
+                onChange={(e) => handleFieldChange('taxId', e.target.value)}
                 placeholder="RC/SN-2024-B-0000"
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg font-mono text-slate-900 focus:bg-white"
               />
@@ -364,7 +527,7 @@ export function SettingsView({
                 id="settings-address"
                 type="text"
                 value={formData.address || ''}
-                onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+                onChange={(e) => handleFieldChange('address', e.target.value)}
                 placeholder="Zone industrielle, Rue 12"
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-900 focus:bg-white"
               />
@@ -378,7 +541,7 @@ export function SettingsView({
                 id="settings-city"
                 type="text"
                 value={formData.city || ''}
-                onChange={(e) => setFormData({ ...formData, city: e.target.value })}
+                onChange={(e) => handleFieldChange('city', e.target.value)}
                 placeholder="Dakar, Sénégal"
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-900 focus:bg-white"
               />
@@ -401,17 +564,24 @@ export function SettingsView({
               <input
                 id="settings-default-margin"
                 type="number"
-                min="5"
-                max="80"
+                min="0"
+                max="99"
                 value={formData.defaultMarginPercent}
                 onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    defaultMarginPercent: sanitizeNumber(e.target.value),
-                  })
+                  handleFieldChange('defaultMarginPercent', sanitizeNumber(e.target.value), 'settings-default-margin')
                 }
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg font-mono font-bold text-slate-900 focus:bg-white"
+                className={`w-full px-3 py-2 bg-slate-50 border rounded-lg font-mono font-bold text-slate-900 focus:bg-white transition-colors ${
+                  validationErrors['settings-default-margin']
+                    ? 'border-red-500 ring-1 ring-red-500 focus:border-red-500 focus:ring-red-500'
+                    : 'border-slate-300 focus:ring-teal-500'
+                }`}
               />
+              {validationErrors['settings-default-margin'] && (
+                <p className="mt-1 text-xs text-red-600 font-medium flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                  <span>{validationErrors['settings-default-margin']}</span>
+                </p>
+              )}
             </div>
 
             <div>
@@ -422,16 +592,23 @@ export function SettingsView({
                 id="settings-default-waste"
                 type="number"
                 min="0"
-                max="30"
+                max="50"
                 value={formData.defaultWastePercent}
                 onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    defaultWastePercent: sanitizeNumber(e.target.value),
-                  })
+                  handleFieldChange('defaultWastePercent', sanitizeNumber(e.target.value), 'settings-default-waste')
                 }
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg font-mono font-bold text-slate-900 focus:bg-white"
+                className={`w-full px-3 py-2 bg-slate-50 border rounded-lg font-mono font-bold text-slate-900 focus:bg-white transition-colors ${
+                  validationErrors['settings-default-waste']
+                    ? 'border-red-500 ring-1 ring-red-500 focus:border-red-500 focus:ring-red-500'
+                    : 'border-slate-300 focus:ring-teal-500'
+                }`}
               />
+              {validationErrors['settings-default-waste'] && (
+                <p className="mt-1 text-xs text-red-600 font-medium flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                  <span>{validationErrors['settings-default-waste']}</span>
+                </p>
+              )}
             </div>
 
             <div>
@@ -441,17 +618,24 @@ export function SettingsView({
               <input
                 id="settings-default-labor-rate"
                 type="number"
-                min="500"
+                min="0"
                 step="100"
                 value={formData.defaultLaborRate}
                 onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    defaultLaborRate: sanitizeNumber(e.target.value),
-                  })
+                  handleFieldChange('defaultLaborRate', sanitizeNumber(e.target.value), 'settings-default-labor-rate')
                 }
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg font-mono font-bold text-slate-900 focus:bg-white"
+                className={`w-full px-3 py-2 bg-slate-50 border rounded-lg font-mono font-bold text-slate-900 focus:bg-white transition-colors ${
+                  validationErrors['settings-default-labor-rate']
+                    ? 'border-red-500 ring-1 ring-red-500 focus:border-red-500 focus:ring-red-500'
+                    : 'border-slate-300 focus:ring-teal-500'
+                }`}
               />
+              {validationErrors['settings-default-labor-rate'] && (
+                <p className="mt-1 text-xs text-red-600 font-medium flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                  <span>{validationErrors['settings-default-labor-rate']}</span>
+                </p>
+              )}
             </div>
 
             <div>
@@ -462,10 +646,7 @@ export function SettingsView({
                 id="settings-default-rounding"
                 value={formData.defaultRounding}
                 onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    defaultRounding: e.target.value as RoundingStep,
-                  })
+                  handleFieldChange('defaultRounding', e.target.value as RoundingStep)
                 }
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg font-medium text-slate-900"
               >
@@ -483,17 +664,24 @@ export function SettingsView({
               <input
                 id="settings-default-validity"
                 type="number"
-                min="7"
-                max="90"
+                min="1"
+                max="180"
                 value={formData.defaultValidityDays}
                 onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    defaultValidityDays: sanitizeNumber(e.target.value),
-                  })
+                  handleFieldChange('defaultValidityDays', sanitizeNumber(e.target.value), 'settings-default-validity')
                 }
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg font-mono text-slate-900"
+                className={`w-full px-3 py-2 bg-slate-50 border rounded-lg font-mono text-slate-900 transition-colors ${
+                  validationErrors['settings-default-validity']
+                    ? 'border-red-500 ring-1 ring-red-500 focus:border-red-500 focus:ring-red-500'
+                    : 'border-slate-300 focus:ring-teal-500'
+                }`}
               />
+              {validationErrors['settings-default-validity'] && (
+                <p className="mt-1 text-xs text-red-600 font-medium flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                  <span>{validationErrors['settings-default-validity']}</span>
+                </p>
+              )}
             </div>
           </div>
 
@@ -509,6 +697,34 @@ export function SettingsView({
               }
               className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs text-slate-900"
             />
+          </div>
+
+          {/* System data visibility settings row */}
+          <div className="pt-3 border-t border-slate-200">
+            <div
+              id="settings-system-data-visibility-row"
+              className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100/70 transition-colors"
+            >
+              <div className="space-y-1">
+                <div className="font-bold text-xs sm:text-sm text-slate-900 flex items-center gap-2">
+                  <SlidersHorizontal className="w-4 h-4 text-teal-600 shrink-0" />
+                  <span>Gérer l’affichage des données système</span>
+                </div>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  Choisissez séparément quelles données prédéfinies sont visibles dans l’application.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                id="btn-open-system-data-modal"
+                onClick={() => setIsSystemDataModalOpen(true)}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-white hover:bg-slate-50 text-slate-800 text-xs font-bold rounded-xl border border-slate-300 shadow-2xs transition-colors cursor-pointer shrink-0"
+              >
+                <SlidersHorizontal className="w-4 h-4 text-slate-600" />
+                <span>Gérer l’affichage</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -653,8 +869,9 @@ export function SettingsView({
         <div className="flex flex-wrap items-center gap-3">
           {/* Export JSON */}
           <button
+            id="settings-open-export-modal-btn"
             type="button"
-            onClick={onExportData}
+            onClick={() => setIsExportModalOpen(true)}
             className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition-colors shadow-xs"
           >
             <Download className="w-4 h-4" />
@@ -662,16 +879,10 @@ export function SettingsView({
           </button>
 
           {/* Import JSON */}
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileImport}
-            accept=".json"
-            className="hidden"
-          />
           <button
+            id="settings-open-import-modal-btn"
             type="button"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => setIsImportModalOpen(true)}
             className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-bold transition-colors shadow-2xs"
           >
             <Upload className="w-4 h-4 text-teal-600" />
@@ -710,12 +921,43 @@ export function SettingsView({
         </div>
       </div>
 
-      {/* 6. Automated Mathematical Self-Test Suite */}
+      {/* Visite Guidée */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-2xs p-5 space-y-3">
+        <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2 border-b border-slate-100 pb-2">
+          <Sparkles className="w-4 h-4 text-teal-600" />
+          6. Visite Guidée & Prise en Main
+        </h2>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl border border-slate-200 bg-slate-50">
+          <div className="space-y-1">
+            <div className="font-bold text-xs sm:text-sm text-slate-900 flex items-center gap-2">
+              <span>Présentation interactive en 7 étapes</span>
+            </div>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Revoir la visite guidée pour explorer l'ensemble des modules d'AtelierDevis (calculateur, devis, matériaux, modèles, paramètres).
+            </p>
+          </div>
+          <button
+            type="button"
+            id="btn-restart-guided-tour"
+            onClick={() => {
+              if (onRestartTour) {
+                onRestartTour();
+              }
+            }}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer shrink-0"
+          >
+            <Play className="w-4 h-4" />
+            <span>Relancer la visite guidée</span>
+          </button>
+        </div>
+      </div>
+
+      {/* 7. Automated Mathematical Self-Test Suite */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-2xs p-5 space-y-4">
         <div className="flex items-center justify-between border-b border-slate-100 pb-2">
           <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-emerald-600" />
-            6. Vérification & Tests des Formules Mathématiques
+            7. Vérification & Tests des Formules Mathématiques
           </h2>
 
           <button
@@ -764,7 +1006,369 @@ export function SettingsView({
             </div>
           </div>
         )}
+
+        {/* Lot 3: Backup & Restore Self-Tests (12 Scenarios) */}
+        <div className="pt-4 border-t border-slate-100">
+          <div className="flex items-center justify-between pb-2">
+            <div>
+              <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                <Database className="w-3.5 h-3.5 text-teal-600" />
+                Tests Automatisés Sauvegarde & Import JSON Intelligent (Lot 3)
+              </div>
+              <p className="text-[11px] text-slate-500">
+                12 scénarios : export complet, export sélectif (matériaux/modèles/devis/profil), import partiel, fusion sans écrasement, remplacement ciblé, détection & arbitrage des conflits, rejet JSON corrompu, et rétrocompatibilité V1.
+              </p>
+            </div>
+
+            <button
+              id="btn-run-backup-tests"
+              type="button"
+              onClick={handleRunBackupTests}
+              className="inline-flex items-center gap-1 px-3 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-900 font-bold rounded-lg text-xs border border-teal-300 transition-colors shrink-0 cursor-pointer"
+            >
+              <Play className="w-3 h-3 fill-current" />
+              <span>Lancer les 12 tests Lot 3</span>
+            </button>
+          </div>
+
+          {backupTestResults && (
+            <div className="space-y-2 pt-2 animate-in fade-in duration-150">
+              <div
+                className={`p-3 rounded-lg text-xs font-bold flex items-center gap-2 ${
+                  backupTestResults.allPassed
+                    ? 'bg-emerald-100 text-emerald-900 border border-emerald-200'
+                    : 'bg-red-100 text-red-900 border border-red-200'
+                }`}
+              >
+                <CheckCircle2 className="w-4 h-4 text-emerald-700" />
+                <span>
+                  {backupTestResults.allPassed
+                    ? `Tous les ${backupTestResults.results.length} tests d'import/export intelligent (Lot 3) sont validés avec succès à 100% !`
+                    : 'Certains tests de sauvegarde ont échoué.'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 text-xs">
+                {backupTestResults.results.map((t) => (
+                  <div
+                    key={t.id}
+                    className="p-2 bg-slate-50 rounded-lg border border-slate-200 space-y-0.5"
+                  >
+                    <div className="flex items-center justify-between font-semibold">
+                      <span className="text-slate-800">{t.name}</span>
+                      <span
+                        className={`font-mono text-[11px] font-bold ${
+                          t.passed ? 'text-emerald-700' : 'text-red-700'
+                        }`}
+                      >
+                        {t.passed ? '✓ Validé' : '✗ Échec'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500">{t.details}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Dedicated Modal: Independent System Data Visibility Management */}
+      {isSystemDataModalOpen && (
+        <div
+          id="modal-system-data-visibility"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-200 overflow-hidden animate-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-teal-100 text-teal-800 rounded-xl">
+                  <SlidersHorizontal className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm sm:text-base text-slate-900">
+                    Gérer l’affichage des données système
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Choisissez séparément quelles données prédéfinies sont visibles dans l’application.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSystemDataModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200 cursor-pointer"
+                aria-label="Fermer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-4 sm:p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+              {/* Section 1: Modèles */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-900 uppercase tracking-wider">
+                  <BookmarkCheck className="w-4 h-4 text-teal-600" />
+                  <span>Modèles</span>
+                </div>
+
+                {/* Control 1: Modèles système */}
+                <div
+                  id="setting-system-templates-row"
+                  className="flex items-center justify-between gap-4 p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition-colors"
+                >
+                  <div className="space-y-0.5 pr-2">
+                    <div className="font-bold text-xs sm:text-sm text-slate-900">
+                      Modèles système
+                    </div>
+                    <p className="text-[11px] sm:text-xs text-slate-500 leading-relaxed">
+                      Afficher ou masquer les modèles gratuits et premium fournis par AtelierDevis.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span
+                      className={`text-[10px] font-bold uppercase tracking-wider ${
+                        formData.showSystemTemplates !== false &&
+                        formData.showPredefinedTemplates !== false
+                          ? 'text-teal-700'
+                          : 'text-slate-400'
+                      }`}
+                    >
+                      {formData.showSystemTemplates !== false &&
+                      formData.showPredefinedTemplates !== false
+                        ? 'Activé'
+                        : 'Masqué'}
+                    </span>
+                    <button
+                      type="button"
+                      id="toggle-system-templates"
+                      role="switch"
+                      aria-checked={
+                        formData.showSystemTemplates !== false &&
+                        formData.showPredefinedTemplates !== false
+                      }
+                      onClick={() => handleToggleSystemSetting('templates')}
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 ${
+                        formData.showSystemTemplates !== false &&
+                        formData.showPredefinedTemplates !== false
+                          ? 'bg-teal-600'
+                          : 'bg-slate-300'
+                      }`}
+                    >
+                      <span className="sr-only">Afficher les modèles système</span>
+                      <span
+                        aria-hidden="true"
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                          formData.showSystemTemplates !== false &&
+                          formData.showPredefinedTemplates !== false
+                            ? 'translate-x-5'
+                            : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Control 2: Catégories des modèles système */}
+                <div
+                  id="setting-system-template-categories-row"
+                  className="flex items-center justify-between gap-4 p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition-colors"
+                >
+                  <div className="space-y-0.5 pr-2">
+                    <div className="font-bold text-xs sm:text-sm text-slate-900">
+                      Catégories des modèles système
+                    </div>
+                    <p className="text-[11px] sm:text-xs text-slate-500 leading-relaxed">
+                      Afficher ou masquer les catégories par défaut (Métallerie, Bois, Aluminium, etc.) dans la bibliothèque de modèles.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span
+                      className={`text-[10px] font-bold uppercase tracking-wider ${
+                        formData.showSystemTemplateCategories !== false &&
+                        formData.showPredefinedTemplateCategories !== false
+                          ? 'text-teal-700'
+                          : 'text-slate-400'
+                      }`}
+                    >
+                      {formData.showSystemTemplateCategories !== false &&
+                      formData.showPredefinedTemplateCategories !== false
+                        ? 'Activé'
+                        : 'Masqué'}
+                    </span>
+                    <button
+                      type="button"
+                      id="toggle-system-template-categories"
+                      role="switch"
+                      aria-checked={
+                        formData.showSystemTemplateCategories !== false &&
+                        formData.showPredefinedTemplateCategories !== false
+                      }
+                      onClick={() => handleToggleSystemSetting('templateCategories')}
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 ${
+                        formData.showSystemTemplateCategories !== false &&
+                        formData.showPredefinedTemplateCategories !== false
+                          ? 'bg-teal-600'
+                          : 'bg-slate-300'
+                      }`}
+                    >
+                      <span className="sr-only">Afficher les catégories des modèles système</span>
+                      <span
+                        aria-hidden="true"
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                          formData.showSystemTemplateCategories !== false &&
+                          formData.showPredefinedTemplateCategories !== false
+                            ? 'translate-x-5'
+                            : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 2: Matériaux */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-900 uppercase tracking-wider">
+                  <Package className="w-4 h-4 text-teal-600" />
+                  <span>Matériaux</span>
+                </div>
+
+                {/* Control 3: Matériaux système */}
+                <div
+                  id="setting-system-materials-row"
+                  className="flex items-center justify-between gap-4 p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition-colors"
+                >
+                  <div className="space-y-0.5 pr-2">
+                    <div className="font-bold text-xs sm:text-sm text-slate-900">
+                      Matériaux système
+                    </div>
+                    <p className="text-[11px] sm:text-xs text-slate-500 leading-relaxed">
+                      Afficher ou masquer la liste des profilés, fers et consommables intégrés par défaut.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span
+                      className={`text-[10px] font-bold uppercase tracking-wider ${
+                        formData.showSystemMaterials !== false &&
+                        formData.showPredefinedMaterials !== false
+                          ? 'text-teal-700'
+                          : 'text-slate-400'
+                      }`}
+                    >
+                      {formData.showSystemMaterials !== false &&
+                      formData.showPredefinedMaterials !== false
+                        ? 'Activé'
+                        : 'Masqué'}
+                    </span>
+                    <button
+                      type="button"
+                      id="toggle-system-materials"
+                      role="switch"
+                      aria-checked={
+                        formData.showSystemMaterials !== false &&
+                        formData.showPredefinedMaterials !== false
+                      }
+                      onClick={() => handleToggleSystemSetting('materials')}
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 ${
+                        formData.showSystemMaterials !== false &&
+                        formData.showPredefinedMaterials !== false
+                          ? 'bg-teal-600'
+                          : 'bg-slate-300'
+                      }`}
+                    >
+                      <span className="sr-only">Afficher les matériaux système</span>
+                      <span
+                        aria-hidden="true"
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                          formData.showSystemMaterials !== false &&
+                          formData.showPredefinedMaterials !== false
+                            ? 'translate-x-5'
+                            : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Control 4: Catégories des matériaux système */}
+                <div
+                  id="setting-system-material-categories-row"
+                  className="flex items-center justify-between gap-4 p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100/70 transition-colors"
+                >
+                  <div className="space-y-0.5 pr-2">
+                    <div className="font-bold text-xs sm:text-sm text-slate-900">
+                      Catégories des matériaux système
+                    </div>
+                    <p className="text-[11px] sm:text-xs text-slate-500 leading-relaxed">
+                      Afficher ou masquer les catégories de matériaux standard du système (Tubes & Profilés, Tôles, Soudure, etc.).
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span
+                      className={`text-[10px] font-bold uppercase tracking-wider ${
+                        formData.showSystemMaterialCategories !== false &&
+                        formData.showPredefinedMaterialCategories !== false
+                          ? 'text-teal-700'
+                          : 'text-slate-400'
+                      }`}
+                    >
+                      {formData.showSystemMaterialCategories !== false &&
+                      formData.showPredefinedMaterialCategories !== false
+                        ? 'Activé'
+                        : 'Masqué'}
+                    </span>
+                    <button
+                      type="button"
+                      id="toggle-system-material-categories"
+                      role="switch"
+                      aria-checked={
+                        formData.showSystemMaterialCategories !== false &&
+                        formData.showPredefinedMaterialCategories !== false
+                      }
+                      onClick={() => handleToggleSystemSetting('materialCategories')}
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 ${
+                        formData.showSystemMaterialCategories !== false &&
+                        formData.showPredefinedMaterialCategories !== false
+                          ? 'bg-teal-600'
+                          : 'bg-slate-300'
+                      }`}
+                    >
+                      <span className="sr-only">Afficher les catégories des matériaux système</span>
+                      <span
+                        aria-hidden="true"
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                          formData.showSystemMaterialCategories !== false &&
+                          formData.showPredefinedMaterialCategories !== false
+                            ? 'translate-x-5'
+                            : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setIsSystemDataModalOpen(false)}
+                className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs cursor-pointer shadow-2xs transition-colors"
+              >
+                Fermer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Dedicated In-App Confirmation Modal for Factory Reset */}
       {showFactoryResetModal && (
@@ -827,13 +1431,30 @@ export function SettingsView({
         <LogoEditorModal
           isOpen={isCropModalOpen}
           imageSrc={cropModalSrc}
+          initialSettings={cropModalInitialSettings}
           onClose={() => {
             setIsCropModalOpen(false);
             setCropModalSrc(null);
+            setCropModalInitialSettings(undefined);
           }}
           onConfirm={handleApplyCroppedLogo}
         />
       )}
+
+      {/* Lot 3: Selective JSON Export Modal */}
+      <ExportModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        snapshot={getDbSnapshot()}
+      />
+
+      {/* Lot 3: Intelligent JSON Import Modal with Preview & Conflicts */}
+      <ImportModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        snapshot={getDbSnapshot()}
+        onImportSuccess={handleImportSuccess}
+      />
     </div>
   );
 }

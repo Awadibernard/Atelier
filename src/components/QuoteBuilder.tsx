@@ -16,6 +16,7 @@ import {
   Sparkles,
   Calculator,
   AlertCircle,
+  AlertTriangle,
   RotateCcw,
 } from 'lucide-react';
 import {
@@ -125,6 +126,18 @@ export function QuoteBuilder({
     activeDraft?.detailLevel || editingQuote?.detailLevel || 'grouped'
   );
 
+  // Source calculation resolution (from props or editingQuote)
+  const sourceCalculation = useMemo(() => {
+    if (fromCalculation) return fromCalculation;
+    if (editingQuote?.calculationInput && editingQuote?.calculationResult) {
+      return {
+        input: editingQuote.calculationInput,
+        result: editingQuote.calculationResult,
+      };
+    }
+    return null;
+  }, [fromCalculation, editingQuote]);
+
   // Line items
   const [lineItems, setLineItems] = useState<QuoteLineItem[]>(() => {
     if (activeDraft?.lineItems && activeDraft.lineItems.length > 0) {
@@ -138,8 +151,8 @@ export function QuoteBuilder({
     if (fromCalculation) {
       const { input, result } = fromCalculation;
 
-      // If user wants grouped summary (standard for workshops)
-      if (input.materials.length > 0 || result.laborCost > 0) {
+      // Check if calculation has a valid selling price or direct costs
+      if (result.roundedSellingPrice > 0 || input.materials.length > 0 || result.laborCost > 0) {
         return [
           {
             id: generateId(),
@@ -189,6 +202,7 @@ export function QuoteBuilder({
 
   // Validation & UI State
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -275,43 +289,86 @@ export function QuoteBuilder({
         return updated;
       })
     );
+
+    // Clear validation error if corrected
+    setValidationErrors((prev) => {
+      const next = { ...prev };
+      if (field === 'description' && String(value).trim()) {
+        delete next[`quote-line-desc-${id}`];
+      } else if (field === 'quantity' && Number(value) > 0) {
+        delete next[`quote-line-qty-${id}`];
+      } else if (field === 'unitPrice' && Number(value) >= 0) {
+        delete next[`quote-line-price-${id}`];
+      }
+      return next;
+    });
   };
 
   const handleRemoveLineItem = (id: string) => {
     setLineItems((prev) => prev.filter((item) => item.id !== id));
+    setValidationErrors((prev) => {
+      const next = { ...prev };
+      delete next[`quote-line-desc-${id}`];
+      delete next[`quote-line-qty-${id}`];
+      delete next[`quote-line-price-${id}`];
+      return next;
+    });
+  };
+
+  // Restore the single consolidated calculated service line with 1 click
+  const handleRestoreCalculatedLine = () => {
+    if (!sourceCalculation || !sourceCalculation.result?.roundedSellingPrice) return;
+    const unitPrice = sourceCalculation.result.roundedSellingPrice;
+    const newLine: QuoteLineItem = {
+      id: generateId(),
+      description: projectTitle
+        ? `Fabrication et fourniture : ${projectTitle} (Selon calcul atelier)`
+        : `Fabrication de l'ouvrage selon spécifications (Fourniture & Main d'œuvre)`,
+      quantity: 1,
+      unit: 'ensemble',
+      unitPrice,
+      total: unitPrice,
+      itemType: 'service',
+    };
+    setLineItems((prev) => [...prev, newLine]);
+    showSuccess('✓ Prestation issue du calcul atelier réinsérée dans le devis.');
   };
 
   // Convert calculation items into detailed breakdown with proportional markup on all components
   const handlePopulateDetailedFromCalculation = () => {
-    const calc = fromCalculation || (editingQuote?.calculationInput && editingQuote?.calculationResult ? {
-      input: editingQuote.calculationInput,
-      result: editingQuote.calculationResult,
-    } : null);
-
+    const calc = sourceCalculation;
     if (!calc) return;
     const { input, result } = calc;
 
     const items: QuoteLineItem[] = [];
     const markupFactor = result.totalCost > 0 ? result.roundedSellingPrice / result.totalCost : 1.25;
 
-    // 1. Materials
-    input.materials.forEach((m) => {
+    // 1. Materials (filter out unfilled empty rows)
+    const validMaterials = input.materials.filter(
+      (m) => (m.name && m.name.trim() !== '') || (m.unitPrice && m.unitPrice > 0) || (m.quantity && m.quantity > 0)
+    );
+    validMaterials.forEach((m) => {
+      const qty = m.quantity || 1;
+      const uPrice = m.unitPrice || 0;
       // Direct raw unit cost with waste factored in
-      const effectiveUnitCost = m.unitPrice * (1 + (input.wastePercent || 0) / 100);
+      const effectiveUnitCost = uPrice * (1 + (input.wastePercent || 0) / 100);
       const clientPrice = Math.round(effectiveUnitCost * markupFactor);
       items.push({
         id: generateId(),
         description: `Fourniture : ${m.name || 'Matériau'}`,
-        quantity: m.quantity,
-        unit: m.unit,
+        quantity: qty,
+        unit: m.unit || 'piece',
         unitPrice: clientPrice,
-        total: Math.round(m.quantity * clientPrice),
+        total: Math.round(qty * clientPrice),
         itemType: 'material',
       });
     });
 
-    // 2. Labor / Fabrication
-    if (result.laborCost > 0) {
+    // 2. Labor / Fabrication (filter out unfilled empty tasks)
+    const validLabor = input.labor.filter(
+      (l) => (l.task && l.task.trim() !== '') || (l.hours && l.hours > 0) || (l.hourlyRate && l.hourlyRate > 0)
+    );
+    if (result.laborCost > 0 || validLabor.length > 0) {
       const laborClientPrice = Math.round(result.laborCost * markupFactor);
       items.push({
         id: generateId(),
@@ -341,6 +398,7 @@ export function QuoteBuilder({
 
     if (items.length > 0) {
       setLineItems(items);
+      showSuccess('✓ Lignes détaillées générées d\'après votre calcul.');
     }
   };
 
@@ -401,66 +459,55 @@ export function QuoteBuilder({
   };
 
   const handleSave = () => {
+    const errors: Record<string, string> = {};
+
     // 1. Validate Project Title
     if (!projectTitle.trim()) {
-      setErrorMessage('Veuillez saisir un intitulé pour le projet.');
-      showError('Veuillez renseigner un intitulé pour le projet.');
-      focusAndScrollToField('quote-project-title');
-      return;
+      errors['quote-project-title'] = 'Veuillez renseigner un intitulé pour le projet.';
     }
 
     // 2. Validate Customer Name
     if (!customer.name.trim()) {
-      setErrorMessage('Veuillez renseigner le nom ou l\'entreprise du client.');
-      showError('Veuillez renseigner le nom ou l\'entreprise du client.');
-      focusAndScrollToField('quote-customer-name');
-      return;
+      errors['quote-customer-name'] = "Veuillez renseigner le nom ou l'entreprise du client.";
     }
 
     // 3. Validate Line Items
     if (lineItems.length === 0) {
-      setErrorMessage('Veuillez ajouter au moins une ligne de prestation.');
-      showError('Veuillez ajouter au moins une ligne de prestation.');
-      return;
+      errors['quote-line-items'] = 'Veuillez ajouter au moins une ligne de prestation.';
     }
 
     for (const item of lineItems) {
       if (!item.description.trim()) {
-        setErrorMessage('Veuillez renseigner la désignation de la prestation.');
-        showError('Veuillez renseigner la désignation de la prestation.');
-        focusAndScrollToField(`quote-line-desc-${item.id}`);
-        return;
+        errors[`quote-line-desc-${item.id}`] = 'Veuillez renseigner la désignation de la prestation.';
       }
       if (item.quantity <= 0) {
-        setErrorMessage('La quantité de la prestation doit être supérieure à 0.');
-        showError('La quantité de la prestation doit être supérieure à 0.');
-        focusAndScrollToField(`quote-line-qty-${item.id}`);
-        return;
+        errors[`quote-line-qty-${item.id}`] = 'La quantité de la prestation doit être supérieure à 0.';
       }
       if (item.unitPrice < 0) {
-        setErrorMessage('Le prix unitaire d\'une prestation ne peut pas être négatif.');
-        showError('Le prix unitaire d\'une prestation ne peut pas être négatif.');
-        focusAndScrollToField(`quote-line-price-${item.id}`);
-        return;
+        errors[`quote-line-price-${item.id}`] = "Le prix unitaire d'une prestation ne peut pas être négatif.";
       }
     }
 
     // 4. Validate Discount
     if (discountPercent < 0 || discountPercent > 100) {
-      setErrorMessage('Le pourcentage de remise doit être compris entre 0% et 100%.');
-      showError('Le pourcentage de remise doit être compris entre 0% et 100%.');
-      focusAndScrollToField('quote-discount-percent');
-      return;
+      errors['quote-discount-percent'] = 'Le pourcentage de remise doit être compris entre 0% et 100%.';
     }
 
     // 5. Validate Deposit
     if (depositConfig.type === 'percent' && (depositConfig.value < 0 || depositConfig.value > 100)) {
-      setErrorMessage('Le pourcentage d\'acompte doit être compris entre 0% et 100%.');
-      showError('Le pourcentage d\'acompte doit être compris entre 0% et 100%.');
-      focusAndScrollToField('quote-deposit-value');
+      errors['quote-deposit-value'] = "Le pourcentage d'acompte doit être compris entre 0% et 100%.";
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setValidationErrors(errors);
+      const firstKey = Object.keys(errors)[0];
+      setErrorMessage(errors[firstKey]);
+      showError(errors[firstKey]);
+      focusAndScrollToField(firstKey);
       return;
     }
 
+    setValidationErrors({});
     setErrorMessage(null);
     const quote = buildCurrentQuote();
     onSaveQuote(quote);
@@ -631,10 +678,29 @@ export function QuoteBuilder({
                   id="quote-customer-name"
                   type="text"
                   value={customer.name}
-                  onChange={(e) => setCustomer({ ...customer, name: e.target.value })}
+                  onChange={(e) => {
+                    setCustomer({ ...customer, name: e.target.value });
+                    if (validationErrors['quote-customer-name'] && e.target.value.trim()) {
+                      setValidationErrors((prev) => {
+                        const next = { ...prev };
+                        delete next['quote-customer-name'];
+                        return next;
+                      });
+                    }
+                  }}
                   placeholder="Ex: M. Ousmane Diop / Villa Almadies"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg font-medium text-slate-900 focus:bg-white focus:ring-1 focus:ring-teal-500"
+                  className={`w-full px-3 py-2 bg-slate-50 border rounded-lg font-medium text-slate-900 focus:bg-white transition-colors ${
+                    validationErrors['quote-customer-name']
+                      ? 'border-red-500 ring-1 ring-red-500 focus:border-red-500 focus:ring-red-500'
+                      : 'border-slate-300 focus:ring-1 focus:ring-teal-500'
+                  }`}
                 />
+                {validationErrors['quote-customer-name'] && (
+                  <p className="mt-1 text-[11px] text-red-600 font-medium flex items-center gap-1">
+                    <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                    <span>{validationErrors['quote-customer-name']}</span>
+                  </p>
+                )}
               </div>
 
               <div>
@@ -697,10 +763,29 @@ export function QuoteBuilder({
                   id="quote-project-title"
                   type="text"
                   value={projectTitle}
-                  onChange={(e) => setProjectTitle(e.target.value)}
+                  onChange={(e) => {
+                    setProjectTitle(e.target.value);
+                    if (validationErrors['quote-project-title'] && e.target.value.trim()) {
+                      setValidationErrors((prev) => {
+                        const next = { ...prev };
+                        delete next['quote-project-title'];
+                        return next;
+                      });
+                    }
+                  }}
                   placeholder="Ex: Fabrication et pose de 2 portes métalliques avec serrures"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg font-bold text-slate-900 focus:bg-white focus:ring-1 focus:ring-teal-500 text-sm"
+                  className={`w-full px-3 py-2 bg-slate-50 border rounded-lg font-bold text-slate-900 focus:bg-white transition-colors text-sm ${
+                    validationErrors['quote-project-title']
+                      ? 'border-red-500 ring-1 ring-red-500 focus:border-red-500 focus:ring-red-500'
+                      : 'border-slate-300 focus:ring-1 focus:ring-teal-500'
+                  }`}
                 />
+                {validationErrors['quote-project-title'] && (
+                  <p className="mt-1 text-[11px] text-red-600 font-medium flex items-center gap-1">
+                    <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                    <span>{validationErrors['quote-project-title']}</span>
+                  </p>
+                )}
               </div>
 
               <div>
@@ -732,101 +817,173 @@ export function QuoteBuilder({
                 </p>
               </div>
 
-              {(fromCalculation || editingQuote?.calculationInput) && (
-                <button
-                  onClick={handlePopulateDetailedFromCalculation}
-                  className="inline-flex items-center gap-1 text-xs text-teal-700 hover:text-teal-900 font-semibold underline"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>Détailler selon le calcul</span>
-                </button>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
+                {sourceCalculation && (sourceCalculation.result?.roundedSellingPrice || 0) > 0 && !lineItems.some((i) => i.itemType === 'service') && (
+                  <button
+                    type="button"
+                    onClick={handleRestoreCalculatedLine}
+                    className="inline-flex items-center gap-1 text-xs text-teal-700 hover:text-teal-900 font-semibold underline cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Réinsérer prestation calculée</span>
+                  </button>
+                )}
+
+                {sourceCalculation && (
+                  <button
+                    type="button"
+                    onClick={handlePopulateDetailedFromCalculation}
+                    className="inline-flex items-center gap-1 text-xs text-teal-700 hover:text-teal-900 font-semibold underline cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Détailler selon le calcul</span>
+                  </button>
+                )}
+              </div>
             </div>
+
+            {/* Notice Banner: Source Calculation is preserved */}
+            {sourceCalculation && (sourceCalculation.result?.roundedSellingPrice || 0) > 0 && !lineItems.some((i) => i.itemType === 'service') && (
+              <div className="p-3 bg-teal-50 border border-teal-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
+                <div className="space-y-0.5">
+                  <div className="font-bold text-teal-950 flex items-center gap-1.5">
+                    <Calculator className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                    <span>Calcul d'atelier source préservé ({formatCurrency(sourceCalculation.result.roundedSellingPrice, currency)})</span>
+                  </div>
+                  <div className="text-[11px] text-teal-800">
+                    La suppression d'une ligne du devis n'efface jamais votre calcul atelier sous-jacent. Vous pouvez la réinsérer à tout moment.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRestoreCalculatedLine}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-lg text-xs transition-colors shadow-2xs shrink-0 cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Réinsérer la prestation ({formatCurrency(sourceCalculation.result.roundedSellingPrice, currency)})</span>
+                </button>
+              </div>
+            )}
 
             {/* Line items table */}
             <div className="space-y-3">
-              {lineItems.map((item, index) => (
-                <div
-                  key={item.id}
-                  className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2 text-xs"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-bold text-slate-400 text-[11px]">
-                      #{index + 1}
-                    </span>
-                    <input
-                      id={`quote-line-desc-${item.id}`}
-                      type="text"
-                      value={item.description}
-                      onChange={(e) => handleUpdateLineItem(item.id, 'description', e.target.value)}
-                      placeholder="Désignation des travaux ou fournitures"
-                      className="flex-1 px-3 py-1.5 bg-white border border-slate-300 rounded font-medium text-slate-900 focus:ring-1 focus:ring-teal-500"
-                    />
+              {lineItems.length === 0 ? (
+                <div className="text-center py-6 border-2 border-dashed border-slate-200 rounded-lg text-xs text-slate-400 space-y-2">
+                  <p>Aucune prestation dans le devis.</p>
+                  {sourceCalculation && (sourceCalculation.result?.roundedSellingPrice || 0) > 0 && (
                     <button
-                      onClick={() => handleRemoveLineItem(item.id)}
-                      className="p-1.5 text-slate-400 hover:text-red-600 rounded transition-colors"
-                      title="Supprimer la ligne"
+                      type="button"
+                      onClick={handleRestoreCalculatedLine}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-teal-800 bg-teal-50 hover:bg-teal-100 rounded-lg border border-teal-200"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Réinsérer la prestation issue du calcul</span>
                     </button>
-                  </div>
-
-                  <div className="grid grid-cols-4 gap-2 items-center">
-                    <div>
-                      <label htmlFor={`quote-line-qty-${item.id}`} className="text-[10px] font-semibold text-slate-500 block mb-0.5">
-                        Qté
-                      </label>
+                  )}
+                </div>
+              ) : (
+                lineItems.map((item, index) => (
+                  <div
+                    key={item.id}
+                    className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2 text-xs"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="font-bold text-slate-400 text-[11px]">
+                          #{index + 1}
+                        </span>
+                        {item.itemType === 'service' && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-teal-100 text-teal-800 border border-teal-200">
+                            Prestation calculée
+                          </span>
+                        )}
+                      </div>
                       <input
-                        id={`quote-line-qty-${item.id}`}
-                        type="number"
-                        min="0"
-                        step="any"
-                        value={item.quantity === 0 ? '' : item.quantity}
-                        onChange={(e) => handleUpdateLineItem(item.id, 'quantity', e.target.value)}
-                        className="w-full px-2 py-1 bg-white border border-slate-300 rounded font-mono text-slate-900 focus:ring-1 focus:ring-teal-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label htmlFor={`quote-line-unit-${item.id}`} className="text-[10px] font-semibold text-slate-500 block mb-0.5">
-                        Unité
-                      </label>
-                      <input
-                        id={`quote-line-unit-${item.id}`}
+                        id={`quote-line-desc-${item.id}`}
                         type="text"
-                        value={item.unit}
-                        onChange={(e) => handleUpdateLineItem(item.id, 'unit', e.target.value)}
-                        placeholder="ensemble, m, pce..."
-                        className="w-full px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 focus:ring-1 focus:ring-teal-500"
+                        value={item.description}
+                        onChange={(e) => handleUpdateLineItem(item.id, 'description', e.target.value)}
+                        placeholder="Désignation des travaux ou fournitures"
+                        className={`flex-1 px-3 py-1.5 bg-white border rounded font-medium text-slate-900 transition-colors ${
+                          validationErrors[`quote-line-desc-${item.id}`]
+                            ? 'border-red-500 ring-1 ring-red-500 focus:border-red-500 focus:ring-red-500'
+                            : 'border-slate-300 focus:ring-1 focus:ring-teal-500'
+                        }`}
                       />
+                      <button
+                        onClick={() => handleRemoveLineItem(item.id)}
+                        className="p-1.5 text-slate-400 hover:text-red-600 rounded transition-colors cursor-pointer"
+                        title="Supprimer la ligne"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
 
-                    <div>
-                      <label htmlFor={`quote-line-price-${item.id}`} className="text-[10px] font-semibold text-slate-500 block mb-0.5">
-                        Prix Unit. ({currency})
-                      </label>
-                      <input
-                        id={`quote-line-price-${item.id}`}
-                        type="number"
-                        min="0"
-                        step="100"
-                        value={item.unitPrice === 0 ? '' : item.unitPrice}
-                        onChange={(e) => handleUpdateLineItem(item.id, 'unitPrice', e.target.value)}
-                        className="w-full px-2 py-1 bg-white border border-slate-300 rounded font-mono text-slate-900 focus:ring-1 focus:ring-teal-500"
-                      />
-                    </div>
+                    <div className="grid grid-cols-4 gap-2 items-center">
+                      <div>
+                        <label htmlFor={`quote-line-qty-${item.id}`} className="text-[10px] font-semibold text-slate-500 block mb-0.5">
+                          Qté
+                        </label>
+                        <input
+                          id={`quote-line-qty-${item.id}`}
+                          type="number"
+                          min="0"
+                          step="any"
+                          value={item.quantity === 0 ? '' : item.quantity}
+                          onChange={(e) => handleUpdateLineItem(item.id, 'quantity', e.target.value)}
+                          className={`w-full px-2 py-1 bg-white border rounded font-mono text-slate-900 transition-colors ${
+                            validationErrors[`quote-line-qty-${item.id}`]
+                              ? 'border-red-500 ring-1 ring-red-500 focus:border-red-500 focus:ring-red-500'
+                              : 'border-slate-300 focus:ring-1 focus:ring-teal-500'
+                          }`}
+                        />
+                      </div>
 
-                    <div className="text-right">
-                      <label className="text-[10px] font-semibold text-slate-400 block mb-0.5">
-                        Total ligne
-                      </label>
-                      <div className="font-mono font-bold text-slate-900 text-xs py-1">
-                        {formatCurrency(item.total, currency)}
+                      <div>
+                        <label htmlFor={`quote-line-unit-${item.id}`} className="text-[10px] font-semibold text-slate-500 block mb-0.5">
+                          Unité
+                        </label>
+                        <input
+                          id={`quote-line-unit-${item.id}`}
+                          type="text"
+                          value={item.unit}
+                          onChange={(e) => handleUpdateLineItem(item.id, 'unit', e.target.value)}
+                          placeholder="ensemble, m, pce..."
+                          className="w-full px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 focus:ring-1 focus:ring-teal-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label htmlFor={`quote-line-price-${item.id}`} className="text-[10px] font-semibold text-slate-500 block mb-0.5">
+                          Prix Unit. ({currency})
+                        </label>
+                        <input
+                          id={`quote-line-price-${item.id}`}
+                          type="number"
+                          min="0"
+                          step="100"
+                          value={item.unitPrice === 0 ? '' : item.unitPrice}
+                          onChange={(e) => handleUpdateLineItem(item.id, 'unitPrice', e.target.value)}
+                          className={`w-full px-2 py-1 bg-white border rounded font-mono text-slate-900 transition-colors ${
+                            validationErrors[`quote-line-price-${item.id}`]
+                              ? 'border-red-500 ring-1 ring-red-500 focus:border-red-500 focus:ring-red-500'
+                              : 'border-slate-300 focus:ring-1 focus:ring-teal-500'
+                          }`}
+                        />
+                      </div>
+
+                      <div className="text-right">
+                        <label className="text-[10px] font-semibold text-slate-400 block mb-0.5">
+                          Total ligne
+                        </label>
+                        <div className="font-mono font-bold text-slate-900 text-xs py-1">
+                          {formatCurrency(item.total, currency)}
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                ))
+              )}
 
               <button
                 onClick={handleAddLineItem}

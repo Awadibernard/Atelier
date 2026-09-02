@@ -11,10 +11,17 @@ import {
   Hammer,
   Clock,
   Filter,
+  FolderCog,
+  Tag,
+  Edit2,
+  Eye,
+  EyeOff,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   BusinessProfile,
   LaborRateLibraryItem,
+  MaterialCategory,
   MaterialLibraryItem,
   MaterialUnit,
 } from '../types';
@@ -22,28 +29,22 @@ import { formatCurrency } from '../utils/formatters';
 import { sanitizeNumber } from '../engine/calculator';
 import { useNotification } from '../context/NotificationContext';
 import { focusAndScrollToField } from '../utils/formValidation';
+import { isSystemMaterial } from '../storage/db';
 
 interface Props {
   materials: MaterialLibraryItem[];
+  categories?: MaterialCategory[];
   laborRates: LaborRateLibraryItem[];
   profile: BusinessProfile;
   onSaveMaterial: (item: Omit<MaterialLibraryItem, 'id' | 'updatedAt'> & { id?: string }) => void;
   onDeleteMaterial: (id: string) => void;
   onSaveLaborRate: (item: Omit<LaborRateLibraryItem, 'id'> & { id?: string }) => void;
   onDeleteLaborRate: (id: string) => void;
+  onSaveCategory?: (cat: { id?: string; name: string }) => void;
+  onRenameCategory?: (id: string, newName: string) => void;
+  onToggleCategoryEnabled?: (id: string, enabled?: boolean) => void;
+  onDeleteCategory?: (id: string, reassignToCategoryId: string) => void;
 }
-
-const CATEGORIES = [
-  'Tous',
-  'Tubes & Profilés',
-  'Tôles & Fers',
-  'Soudure & Consommables',
-  'Peinture & Finition',
-  'Quincaillerie & Accessoires',
-  'Bois & Menuiserie',
-  'Aluminium',
-  'Autre',
-];
 
 const COMMON_UNITS = [
   { value: 'm', label: 'Mètre (m)' },
@@ -59,25 +60,39 @@ const COMMON_UNITS = [
 
 export function MaterialLibrary({
   materials,
+  categories = [],
   laborRates,
   profile,
   onSaveMaterial,
   onDeleteMaterial,
   onSaveLaborRate,
   onDeleteLaborRate,
+  onSaveCategory,
+  onRenameCategory,
+  onToggleCategoryEnabled,
+  onDeleteCategory,
 }: Props) {
   const currency = profile.currencySymbol || 'FCFA';
   const { showSuccess, showError, showInfo } = useNotification();
 
   const [activeTab, setActiveTab] = useState<'materials' | 'labor'>('materials');
-  const [selectedCategory, setSelectedCategory] = useState<string>('Tous');
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
+
+  // Category Management Modal State
+  const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [editingCatId, setEditingCatId] = useState<string | null>(null);
+  const [editingCatName, setEditingCatName] = useState('');
+  const [categoryToDelete, setCategoryToDelete] = useState<MaterialCategory | null>(null);
+  const [reassignTargetId, setReassignTargetId] = useState<string>('matcat-autre');
 
   // Material editing modal/form
   const [isEditingMaterial, setIsEditingMaterial] = useState<boolean>(false);
   const [editingMaterialId, setEditingMaterialId] = useState<string | undefined>(undefined);
   const [matForm, setMatForm] = useState({
     name: '',
+    categoryId: 'matcat-tubes',
     category: 'Tubes & Profilés',
     unit: 'm' as MaterialUnit,
     defaultUnitPrice: 2000,
@@ -95,20 +110,78 @@ export function MaterialLibrary({
   // Quick inline price update map
   const [inlinePrices, setInlinePrices] = useState<Record<string, number>>({});
 
-  // Filtered materials
+  // Helper map for fast ID <-> Name lookup
+  const categoryMap = useMemo(() => {
+    const map = new Map<string, string>();
+    categories.forEach((cat) => {
+      map.set(cat.id, cat.name);
+    });
+    return map;
+  }, [categories]);
+
+  // Independent visibility flags
+  const showSysMaterials =
+    profile.showSystemMaterials !== false && profile.showPredefinedMaterials !== false;
+  const showSysMaterialCategories =
+    profile.showSystemMaterialCategories !== false &&
+    profile.showPredefinedMaterialCategories !== false;
+
+  // Determine materials visible according to showSystemMaterials setting
+  const visibleMaterials = useMemo(() => {
+    if (!showSysMaterials) {
+      return materials.filter((m) => !isSystemMaterial(m));
+    }
+    return materials;
+  }, [materials, showSysMaterials]);
+
+  // Determine categories visible according to showSystemMaterialCategories setting
+  const visibleCategories = useMemo(() => {
+    if (!showSysMaterialCategories) {
+      return categories.filter((c) => !c.isDefault);
+    }
+    return categories;
+  }, [categories, showSysMaterialCategories]);
+
+  const formSelectCategories = useMemo(() => {
+    if (!showSysMaterialCategories) {
+      const customOnly = categories.filter((c) => !c.isDefault);
+      return customOnly.length > 0 ? customOnly : categories;
+    }
+    return categories;
+  }, [categories, showSysMaterialCategories]);
+
+  // Count materials per category (among visible)
+  const categoryCounts = useMemo(() => {
+    const countsMap = new Map<string, number>();
+    visibleMaterials.forEach((mat) => {
+      const catId = mat.categoryId || 'matcat-autre';
+      countsMap.set(catId, (countsMap.get(catId) || 0) + 1);
+    });
+    return countsMap;
+  }, [visibleMaterials]);
+
+  // Filtered materials list
   const filteredMaterials = useMemo(() => {
-    return materials.filter((m) => {
+    return visibleMaterials.filter((m) => {
       const matchSearch = m.name.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchCat = selectedCategory === 'Tous' || m.category === selectedCategory;
+      const catId = m.categoryId || 'matcat-autre';
+      const matchCat = selectedCategoryId === 'all' || catId === selectedCategoryId;
       return matchSearch && matchCat;
     });
-  }, [materials, searchQuery, selectedCategory]);
+  }, [visibleMaterials, searchQuery, selectedCategoryId]);
 
   const handleOpenNewMaterial = () => {
     setEditingMaterialId(undefined);
+    const defaultCatId =
+      selectedCategoryId !== 'all'
+        ? selectedCategoryId
+        : formSelectCategories[0]?.id || 'matcat-tubes';
+    const defaultCatName = categoryMap.get(defaultCatId) || 'Tubes & Profilés';
+
     setMatForm({
       name: '',
-      category: selectedCategory !== 'Tous' ? selectedCategory : 'Tubes & Profilés',
+      categoryId: defaultCatId,
+      category: defaultCatName,
       unit: 'm',
       defaultUnitPrice: 2000,
     });
@@ -117,9 +190,13 @@ export function MaterialLibrary({
 
   const handleOpenEditMaterial = (item: MaterialLibraryItem) => {
     setEditingMaterialId(item.id);
+    const catId = item.categoryId || 'matcat-autre';
+    const catName = categoryMap.get(catId) || item.category || 'Autre matériel';
+
     setMatForm({
       name: item.name,
-      category: item.category || 'Tubes & Profilés',
+      categoryId: catId,
+      category: catName,
       unit: item.unit as MaterialUnit,
       defaultUnitPrice: item.defaultUnitPrice,
     });
@@ -140,10 +217,13 @@ export function MaterialLibrary({
       return;
     }
 
+    const catName = categoryMap.get(matForm.categoryId) || matForm.category || 'Autre matériel';
+
     onSaveMaterial({
       id: editingMaterialId,
       name: matForm.name.trim(),
-      category: matForm.category,
+      categoryId: matForm.categoryId,
+      category: catName,
       unit: matForm.unit,
       defaultUnitPrice: sanitizeNumber(matForm.defaultUnitPrice),
     });
@@ -158,6 +238,7 @@ export function MaterialLibrary({
       onSaveMaterial({
         id: item.id,
         name: item.name,
+        categoryId: item.categoryId || 'matcat-autre',
         category: item.category,
         unit: item.unit,
         defaultUnitPrice: sanitizeNumber(newPrice),
@@ -171,7 +252,69 @@ export function MaterialLibrary({
     }
   };
 
-  // Labor rates
+  // Category management handlers
+  const handleCreateCategory = (e: FormEvent) => {
+    e.preventDefault();
+    if (!newCategoryName.trim()) {
+      showError('Veuillez saisir un nom pour la catégorie.');
+      return;
+    }
+    if (onSaveCategory) {
+      onSaveCategory({ name: newCategoryName.trim() });
+      setNewCategoryName('');
+      showSuccess(`✓ Catégorie de matériau « ${newCategoryName.trim()} » créée.`);
+    }
+  };
+
+  const handleStartRenameCategory = (cat: MaterialCategory) => {
+    setEditingCatId(cat.id);
+    setEditingCatName(cat.name);
+  };
+
+  const handleSaveRenameCategory = (catId: string) => {
+    if (!editingCatName.trim()) {
+      showError('Le nom de catégorie ne peut pas être vide.');
+      return;
+    }
+    if (onRenameCategory) {
+      onRenameCategory(catId, editingCatName.trim());
+      setEditingCatId(null);
+      setEditingCatName('');
+      showSuccess(`✓ Catégorie renommée.`);
+    }
+  };
+
+  const handleToggleCategoryEnabled = (cat: MaterialCategory) => {
+    if (onToggleCategoryEnabled) {
+      const nextState = cat.enabled === false ? true : false;
+      onToggleCategoryEnabled(cat.id, nextState);
+      showSuccess(
+        nextState
+          ? `✓ Catégorie « ${cat.name} » réactivée.`
+          : `✓ Catégorie « ${cat.name} » désactivée.`
+      );
+    }
+  };
+
+  const handlePromptDeleteCategory = (cat: MaterialCategory) => {
+    setCategoryToDelete(cat);
+    const otherCat = categories.find((c) => c.id !== cat.id);
+    setReassignTargetId(otherCat ? otherCat.id : 'matcat-autre');
+  };
+
+  const handleConfirmDeleteCategory = () => {
+    if (categoryToDelete && onDeleteCategory) {
+      const name = categoryToDelete.name;
+      onDeleteCategory(categoryToDelete.id, reassignTargetId);
+      if (selectedCategoryId === categoryToDelete.id) {
+        setSelectedCategoryId('all');
+      }
+      setCategoryToDelete(null);
+      showSuccess(`✓ Catégorie « ${name} » supprimée. Les matériaux ont été réassignés.`);
+    }
+  };
+
+  // Labor rates handlers
   const handleOpenNewLabor = () => {
     setEditingLaborId(undefined);
     setLaborForm({
@@ -231,22 +374,22 @@ export function MaterialLibrary({
           </p>
         </div>
 
-        {/* Tab Toggle: Materials vs Labor rates */}
-        <div className="flex items-center gap-2">
+        {/* Tab Toggle: Materials vs Labor rates & Category Management */}
+        <div className="flex items-center gap-2 flex-wrap">
           <div className="flex p-1 bg-slate-200 rounded-lg text-xs font-bold">
             <button
               onClick={() => setActiveTab('materials')}
-              className={`px-3 py-1.5 rounded-md transition-all ${
+              className={`px-3 py-1.5 rounded-md transition-all cursor-pointer ${
                 activeTab === 'materials'
                   ? 'bg-white text-slate-900 shadow-xs'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Matériaux ({materials.length})
+              Matériaux ({visibleMaterials.length})
             </button>
             <button
               onClick={() => setActiveTab('labor')}
-              className={`px-3 py-1.5 rounded-md transition-all ${
+              className={`px-3 py-1.5 rounded-md transition-all cursor-pointer ${
                 activeTab === 'labor'
                   ? 'bg-white text-slate-900 shadow-xs'
                   : 'text-slate-600 hover:text-slate-900'
@@ -257,17 +400,27 @@ export function MaterialLibrary({
           </div>
 
           {activeTab === 'materials' ? (
-            <button
-              onClick={handleOpenNewMaterial}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Nouveau matériau</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsCategoryModalOpen(true)}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-lg border border-slate-300 shadow-2xs transition-colors cursor-pointer"
+              >
+                <FolderCog className="w-4 h-4 text-slate-500" />
+                <span>Gérer les catégories</span>
+              </button>
+              <button
+                onClick={handleOpenNewMaterial}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Nouveau matériau</span>
+              </button>
+            </div>
           ) : (
             <button
               onClick={handleOpenNewLabor}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               <span>Nouveau taux horaire</span>
@@ -278,10 +431,36 @@ export function MaterialLibrary({
 
       {activeTab === 'materials' ? (
         <>
+          {/* Banner when system materials or material categories are hidden */}
+          {(!showSysMaterialCategories || !showSysMaterials) && (
+            <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-3.5 text-xs text-amber-900 flex items-center justify-between gap-3 shadow-2xs">
+              <div className="flex items-center gap-2.5">
+                <EyeOff className="w-4 h-4 text-amber-700 shrink-0" />
+                <span>
+                  {!showSysMaterials && !showSysMaterialCategories ? (
+                    <strong>Matériaux et catégories de matériaux système masqués.</strong>
+                  ) : !showSysMaterials ? (
+                    <strong>Matériaux système masqués :</strong>
+                  ) : (
+                    <strong>Catégories de matériaux système masquées :</strong>
+                  )}{' '}
+                  {!showSysMaterials && !showSysMaterialCategories
+                    ? 'Seuls vos éléments et catégories personnalisés sont affichés.'
+                    : !showSysMaterials
+                    ? 'Seuls vos matériaux personnalisés sont affichés.'
+                    : 'Seules vos catégories personnalisées sont affichées dans la gestion et les filtres.'}
+                </span>
+              </div>
+              <span className="text-[11px] text-amber-800 shrink-0 font-medium">
+                Modifiable dans Paramètres
+              </span>
+            </div>
+          )}
+
           {/* Filters Row */}
-          <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
+          <div className="space-y-3">
             {/* Search */}
-            <div className="relative flex-1 max-w-md">
+            <div className="relative max-w-md">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
               <input
                 type="text"
@@ -292,25 +471,61 @@ export function MaterialLibrary({
               />
             </div>
 
-            {/* Categories */}
-            <div className="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0 text-xs">
-              {CATEGORIES.map((cat) => (
-                <button
-                  key={cat}
-                  onClick={() => setSelectedCategory(cat)}
-                  className={`px-3 py-1.5 rounded-lg font-semibold whitespace-nowrap transition-colors ${
-                    selectedCategory === cat
-                      ? 'bg-slate-900 text-white shadow-2xs'
-                      : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  {cat}
-                </button>
-              ))}
+            {/* Categories Filter Pills */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider shrink-0 mr-1 flex items-center gap-1">
+                <Tag className="w-3 h-3" />
+                <span>Catégories :</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedCategoryId('all')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition-all whitespace-nowrap cursor-pointer ${
+                  selectedCategoryId === 'all'
+                    ? 'bg-slate-800 text-white shadow-2xs'
+                    : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                }`}
+              >
+                Toutes ({materials.length})
+              </button>
+
+              {visibleCategories
+                .filter((cat) => cat.enabled !== false || selectedCategoryId === cat.id)
+                .map((cat) => {
+                  const count = categoryCounts.get(cat.id) || 0;
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setSelectedCategoryId(cat.id)}
+                      className={`px-3 py-1.5 rounded-lg font-bold transition-all whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
+                        selectedCategoryId === cat.id
+                          ? 'bg-teal-700 text-white shadow-2xs'
+                          : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      <span>{cat.name}</span>
+                      {cat.enabled === false && (
+                        <span className="text-[9px] px-1 rounded bg-amber-100 text-amber-800 font-semibold">
+                          Désactivée
+                        </span>
+                      )}
+                      <span
+                        className={`text-[10px] px-1.5 py-0.2 rounded-full font-semibold ${
+                          selectedCategoryId === cat.id
+                            ? 'bg-teal-800 text-teal-100'
+                            : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
             </div>
           </div>
 
-          {/* Materials Grid / Table */}
+          {/* Materials Table */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-2xs divide-y divide-slate-100 overflow-hidden">
             {filteredMaterials.length === 0 ? (
               <div className="text-center py-12 p-6 text-xs text-slate-400">
@@ -321,6 +536,10 @@ export function MaterialLibrary({
                 const isModified =
                   inlinePrices[mat.id] !== undefined &&
                   inlinePrices[mat.id] !== mat.defaultUnitPrice;
+                const catName =
+                  (mat.categoryId ? categoryMap.get(mat.categoryId) : undefined) ||
+                  mat.category ||
+                  'Autre matériel';
 
                 return (
                   <div
@@ -328,10 +547,10 @@ export function MaterialLibrary({
                     className="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50 transition-colors"
                   >
                     <div className="space-y-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-bold text-sm text-slate-900">{mat.name}</span>
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium border border-slate-200">
-                          {mat.category || 'Général'}
+                          {catName}
                         </span>
                       </div>
                       <div className="text-xs text-slate-500">
@@ -365,7 +584,7 @@ export function MaterialLibrary({
                         {isModified && (
                           <button
                             onClick={() => handleSaveInlinePrice(mat)}
-                            className="p-1.5 text-emerald-700 bg-emerald-100 hover:bg-emerald-200 rounded transition-colors"
+                            className="p-1.5 text-emerald-700 bg-emerald-100 hover:bg-emerald-200 rounded transition-colors cursor-pointer"
                             title="Valider le nouveau prix"
                           >
                             <Check className="w-4 h-4" />
@@ -376,7 +595,7 @@ export function MaterialLibrary({
                       {/* Actions */}
                       <button
                         onClick={() => handleOpenEditMaterial(mat)}
-                        className="p-1.5 text-slate-500 hover:text-teal-700 hover:bg-teal-50 rounded transition-colors"
+                        className="p-1.5 text-slate-500 hover:text-teal-700 hover:bg-teal-50 rounded transition-colors cursor-pointer"
                         title="Modifier"
                       >
                         <Edit className="w-4 h-4" />
@@ -434,7 +653,8 @@ export function MaterialLibrary({
 
                   <button
                     onClick={() => handleOpenEditLabor(rate)}
-                    className="p-1.5 text-slate-500 hover:text-teal-700 hover:bg-teal-50 rounded transition-colors"
+                    className="p-1.5 text-slate-500 hover:text-teal-700 hover:bg-teal-50 rounded transition-colors cursor-pointer"
+                    title="Modifier"
                   >
                     <Edit className="w-4 h-4" />
                   </button>
@@ -447,6 +667,7 @@ export function MaterialLibrary({
                       }
                     }}
                     className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
+                    title="Supprimer"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -454,6 +675,257 @@ export function MaterialLibrary({
               </div>
             ))
           )}
+        </div>
+      )}
+
+      {/* Modal: Category Management for Materials */}
+      {isCategoryModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center gap-2">
+                <FolderCog className="w-5 h-5 text-teal-600" />
+                <h3 className="font-bold text-sm sm:text-base text-slate-900">
+                  Gestion des Catégories de Matériaux
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCategoryModalOpen(false);
+                  setEditingCatId(null);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-5 space-y-5 overflow-y-auto flex-1 text-xs">
+              {/* Add category form */}
+              <form onSubmit={handleCreateCategory} className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Nouvelle catégorie de matériau (ex: Visserie inox...)"
+                  value={newCategoryName}
+                  onChange={(e) => setNewCategoryName(e.target.value)}
+                  className="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-teal-500 font-medium"
+                />
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-lg shadow-2xs flex items-center gap-1.5 cursor-pointer shrink-0"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Ajouter</span>
+                </button>
+              </form>
+
+              {/* Notice if system material categories are hidden */}
+              {!showSysMaterialCategories && (
+                <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-center gap-2 shadow-2xs">
+                  <EyeOff className="w-4 h-4 text-amber-700 shrink-0" />
+                  <span>Les catégories de matériaux par défaut du système sont masquées (activables dans Paramètres).</span>
+                </div>
+              )}
+
+              {/* Categories list */}
+              <div className="space-y-2">
+                <label className="font-bold text-slate-700 block">Catégories existantes</label>
+                <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden bg-slate-50/50">
+                  {visibleCategories.map((cat) => {
+                    const count = categoryCounts.get(cat.id) || 0;
+                    const isEditing = editingCatId === cat.id;
+
+                    return (
+                      <div
+                        key={cat.id}
+                        className="p-3 bg-white flex items-center justify-between gap-3"
+                      >
+                        {isEditing ? (
+                          <div className="flex items-center gap-2 flex-1">
+                            <input
+                              type="text"
+                              value={editingCatName}
+                              onChange={(e) => setEditingCatName(e.target.value)}
+                              className="flex-1 px-2.5 py-1.5 border border-teal-500 rounded-md focus:outline-hidden text-xs font-medium"
+                              autoFocus
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleSaveRenameCategory(cat.id)}
+                              className="p-1.5 bg-teal-600 text-white rounded-md hover:bg-teal-700 cursor-pointer"
+                              title="Enregistrer"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingCatId(null)}
+                              className="p-1.5 text-slate-500 hover:bg-slate-100 rounded-md cursor-pointer"
+                              title="Annuler"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <Tag
+                                className={`w-4 h-4 shrink-0 ${
+                                  cat.enabled === false ? 'text-slate-300' : 'text-slate-400'
+                                }`}
+                              />
+                              <div>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span
+                                    className={`font-bold block truncate ${
+                                      cat.enabled === false
+                                        ? 'text-slate-400 line-through'
+                                        : 'text-slate-900'
+                                    }`}
+                                  >
+                                    {cat.name}
+                                  </span>
+                                  {cat.enabled === false && (
+                                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-50 text-amber-700 border border-amber-200 font-medium">
+                                      Désactivée
+                                    </span>
+                                  )}
+                                  {cat.isDefault && (
+                                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 font-medium">
+                                      Par défaut
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="text-[10px] text-slate-400 font-mono">
+                                  {count} matériau(x)
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleToggleCategoryEnabled(cat)}
+                                className={`p-1.5 rounded-lg cursor-pointer transition-colors ${
+                                  cat.enabled === false
+                                    ? 'text-amber-600 hover:bg-amber-50 bg-amber-50/50'
+                                    : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'
+                                }`}
+                                title={
+                                  cat.enabled === false
+                                    ? 'Réactiver la catégorie'
+                                    : 'Désactiver la catégorie'
+                                }
+                              >
+                                {cat.enabled === false ? (
+                                  <EyeOff className="w-3.5 h-3.5 text-amber-600" />
+                                ) : (
+                                  <Eye className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+
+                              {!cat.isDefault && (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStartRenameCategory(cat)}
+                                    className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg cursor-pointer"
+                                    title="Renommer la catégorie"
+                                  >
+                                    <Edit2 className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePromptDeleteCategory(cat)}
+                                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg cursor-pointer"
+                                    title="Supprimer la catégorie"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCategoryModalOpen(false);
+                  setEditingCatId(null);
+                }}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-xl cursor-pointer text-xs"
+              >
+                Fermer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Delete Category Confirmation with Reassignment */}
+      {categoryToDelete && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-red-200 overflow-hidden p-5 space-y-4 text-xs">
+            <div className="flex items-center gap-3 text-red-600">
+              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-red-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-sm text-slate-900">
+                  Supprimer la catégorie « {categoryToDelete.name} » ?
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  Sécurité garantie : aucun matériau ne sera supprimé.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label htmlFor="reassign-matcat-select" className="font-bold text-slate-700 block">
+                Réassigner les matériaux de cette catégorie vers :
+              </label>
+              <select
+                id="reassign-matcat-select"
+                value={reassignTargetId}
+                onChange={(e) => setReassignTargetId(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-teal-500 font-medium bg-white"
+              >
+                {categories
+                  .filter((c) => c.id !== categoryToDelete.id)
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setCategoryToDelete(null)}
+                className="px-3.5 py-2 font-bold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteCategory}
+                className="px-4 py-2 font-bold bg-red-600 hover:bg-red-700 text-white rounded-lg shadow-2xs cursor-pointer"
+              >
+                Supprimer et réassigner
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -467,7 +939,7 @@ export function MaterialLibrary({
               </h3>
               <button
                 onClick={() => setIsEditingMaterial(false)}
-                className="p-1 text-slate-400 hover:text-slate-700"
+                className="p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -491,23 +963,34 @@ export function MaterialLibrary({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label htmlFor="material-form-category" className="font-semibold text-slate-700 block mb-1">Catégorie</label>
+                  <label htmlFor="material-form-category" className="font-semibold text-slate-700 block mb-1">
+                    Catégorie
+                  </label>
                   <select
                     id="material-form-category"
-                    value={matForm.category}
-                    onChange={(e) => setMatForm({ ...matForm, category: e.target.value })}
+                    value={matForm.categoryId}
+                    onChange={(e) => {
+                      const newCatId = e.target.value;
+                      setMatForm({
+                        ...matForm,
+                        categoryId: newCatId,
+                        category: categoryMap.get(newCatId) || 'Autre matériel',
+                      });
+                    }}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-900"
                   >
-                    {CATEGORIES.filter((c) => c !== 'Tous').map((c) => (
-                      <option key={c} value={c}>
-                        {c}
+                    {formSelectCategories.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
                       </option>
                     ))}
                   </select>
                 </div>
 
                 <div>
-                  <label htmlFor="material-form-unit" className="font-semibold text-slate-700 block mb-1">Unité</label>
+                  <label htmlFor="material-form-unit" className="font-semibold text-slate-700 block mb-1">
+                    Unité
+                  </label>
                   <select
                     id="material-form-unit"
                     value={matForm.unit}
@@ -547,13 +1030,13 @@ export function MaterialLibrary({
                 <button
                   type="button"
                   onClick={() => setIsEditingMaterial(false)}
-                  className="px-4 py-2 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg font-semibold"
+                  className="px-4 py-2 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg font-semibold cursor-pointer"
                 >
                   Annuler
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 text-white bg-teal-600 hover:bg-teal-700 rounded-lg font-bold"
+                  className="px-4 py-2 text-white bg-teal-600 hover:bg-teal-700 rounded-lg font-bold cursor-pointer"
                 >
                   Enregistrer
                 </button>
@@ -573,7 +1056,7 @@ export function MaterialLibrary({
               </h3>
               <button
                 onClick={() => setIsEditingLabor(false)}
-                className="p-1 text-slate-400 hover:text-slate-700"
+                className="p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -631,13 +1114,13 @@ export function MaterialLibrary({
                 <button
                   type="button"
                   onClick={() => setIsEditingLabor(false)}
-                  className="px-4 py-2 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg font-semibold"
+                  className="px-4 py-2 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg font-semibold cursor-pointer"
                 >
                   Annuler
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 text-white bg-teal-600 hover:bg-teal-700 rounded-lg font-bold"
+                  className="px-4 py-2 text-white bg-teal-600 hover:bg-teal-700 rounded-lg font-bold cursor-pointer"
                 >
                   Enregistrer
                 </button>

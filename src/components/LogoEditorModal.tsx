@@ -4,32 +4,43 @@ import {
   Check,
   ZoomIn,
   ZoomOut,
-  RotateCw,
   Move,
   Square,
   Circle,
   Maximize2,
-  Minimize2,
   Sparkles,
   Layers,
+  RotateCcw,
 } from 'lucide-react';
+import { LogoMaskShape, LogoBgColor, LogoEditSettings, DEFAULT_LOGO_EDIT_SETTINGS } from '../types';
 
-export type LogoMaskShape = 'original' | 'square' | 'circle' | 'rounded';
+export type { LogoMaskShape, LogoBgColor, LogoEditSettings };
 
 interface Props {
   isOpen: boolean;
-  imageSrc: string;
+  imageSrc: string; // The original uncropped image
+  initialSettings?: LogoEditSettings;
   onClose: () => void;
-  onConfirm: (croppedDataUrl: string) => void;
+  onConfirm: (
+    croppedDataUrl: string,
+    editSettings: LogoEditSettings,
+    originalSrc: string
+  ) => void;
 }
 
-export function LogoEditorModal({ isOpen, imageSrc, onClose, onConfirm }: Props) {
+export function LogoEditorModal({
+  isOpen,
+  imageSrc,
+  initialSettings,
+  onClose,
+  onConfirm,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [maskShape, setMaskShape] = useState<LogoMaskShape>('original');
   const [zoom, setZoom] = useState<number>(1);
   const [offsetX, setOffsetX] = useState<number>(0);
   const [offsetY, setOffsetY] = useState<number>(0);
-  const [bgColor, setBgColor] = useState<'transparent' | 'white' | 'dark'>('transparent');
+  const [bgColor, setBgColor] = useState<LogoBgColor>('transparent');
   const [imageObj, setImageObj] = useState<HTMLImageElement | null>(null);
 
   // Dragging state
@@ -37,21 +48,34 @@ export function LogoEditorModal({ isOpen, imageSrc, onClose, onConfirm }: Props)
   const dragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const offsetStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
-  // Load image when imageSrc changes
+  // Load image & restore previous editing settings when modal opens or image/settings change
   useEffect(() => {
-    if (!imageSrc) return;
+    if (!isOpen || !imageSrc) return;
+
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
       setImageObj(img);
-      setZoom(1);
-      setOffsetX(0);
-      setOffsetY(0);
     };
     img.src = imageSrc;
-  }, [imageSrc]);
 
-  // Draw on canvas
+    // Restore prior parameters if provided, else defaults
+    if (initialSettings) {
+      setMaskShape(initialSettings.maskShape || 'original');
+      setZoom(typeof initialSettings.zoom === 'number' ? initialSettings.zoom : 1);
+      setOffsetX(typeof initialSettings.offsetX === 'number' ? initialSettings.offsetX : 0);
+      setOffsetY(typeof initialSettings.offsetY === 'number' ? initialSettings.offsetY : 0);
+      setBgColor(initialSettings.bgColor || 'transparent');
+    } else {
+      setMaskShape(DEFAULT_LOGO_EDIT_SETTINGS.maskShape);
+      setZoom(DEFAULT_LOGO_EDIT_SETTINGS.zoom);
+      setOffsetX(DEFAULT_LOGO_EDIT_SETTINGS.offsetX);
+      setOffsetY(DEFAULT_LOGO_EDIT_SETTINGS.offsetY);
+      setBgColor(DEFAULT_LOGO_EDIT_SETTINGS.bgColor || 'transparent');
+    }
+  }, [isOpen, imageSrc, initialSettings]);
+
+  // Draw on preview canvas
   const drawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || !imageObj) return;
@@ -106,7 +130,7 @@ export function LogoEditorModal({ isOpen, imageSrc, onClose, onConfirm }: Props)
       ctx.clip();
     }
 
-    // Calculate image base scale to fit
+    // Calculate image base scale to fit inside 320x320 box
     const imgAspect = imageObj.width / imageObj.height;
     let baseWidth = boxSize;
     let baseHeight = boxSize;
@@ -195,11 +219,11 @@ export function LogoEditorModal({ isOpen, imageSrc, onClose, onConfirm }: Props)
     isDraggingRef.current = false;
   };
 
-  // Generate final cropped output
+  // Generate rendered output from the master original image
   const handleExportAndConfirm = () => {
     if (!imageObj) return;
 
-    // Create an offscreen render canvas sized 400x400
+    // Create an offscreen render canvas matching the 360x360 viewport
     const outCanvas = document.createElement('canvas');
     const outSize = 360;
     outCanvas.width = outSize;
@@ -218,7 +242,7 @@ export function LogoEditorModal({ isOpen, imageSrc, onClose, onConfirm }: Props)
     }
 
     outCtx.save();
-    const pad = maskShape === 'original' ? 0 : 16;
+    const pad = 20;
     const boxSize = outSize - pad * 2;
 
     if (maskShape === 'circle') {
@@ -265,10 +289,26 @@ export function LogoEditorModal({ isOpen, imageSrc, onClose, onConfirm }: Props)
     outCtx.drawImage(imageObj, drawX, drawY, drawW, drawH);
     outCtx.restore();
 
-    // Export as optimized PNG
-    const finalDataUrl = outCanvas.toDataURL('image/png', 0.9);
-    onConfirm(finalDataUrl);
+    // Export as high quality PNG
+    const finalDataUrl = outCanvas.toDataURL('image/png', 0.95);
+    const settings: LogoEditSettings = {
+      maskShape,
+      zoom,
+      offsetX,
+      offsetY,
+      bgColor,
+    };
+
+    onConfirm(finalDataUrl, settings, imageSrc);
     onClose();
+  };
+
+  const handleResetSettings = () => {
+    setMaskShape(DEFAULT_LOGO_EDIT_SETTINGS.maskShape);
+    setZoom(DEFAULT_LOGO_EDIT_SETTINGS.zoom);
+    setOffsetX(DEFAULT_LOGO_EDIT_SETTINGS.offsetX);
+    setOffsetY(DEFAULT_LOGO_EDIT_SETTINGS.offsetY);
+    setBgColor(DEFAULT_LOGO_EDIT_SETTINGS.bgColor || 'transparent');
   };
 
   if (!isOpen) return null;
@@ -280,7 +320,12 @@ export function LogoEditorModal({ isOpen, imageSrc, onClose, onConfirm }: Props)
         <div className="p-4 bg-slate-900 text-white flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-teal-400" />
-            <h3 className="font-bold text-base">Ajuster et Cadrer le Logo</h3>
+            <div>
+              <h3 className="font-bold text-base">Ajuster et Cadrer le Logo</h3>
+              <p className="text-[11px] text-slate-300 font-normal">
+                Édition non destructive • Image source originale préservée
+              </p>
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -396,7 +441,7 @@ export function LogoEditorModal({ isOpen, imageSrc, onClose, onConfirm }: Props)
                 <button
                   key={bg.id}
                   type="button"
-                  onClick={() => setBgColor(bg.id as 'transparent' | 'white' | 'dark')}
+                  onClick={() => setBgColor(bg.id as LogoBgColor)}
                   className={`px-2.5 py-1 rounded-lg font-medium text-[11px] border transition-colors ${
                     bgColor === bg.id
                       ? 'bg-slate-900 text-white border-slate-900'
@@ -414,14 +459,11 @@ export function LogoEditorModal({ isOpen, imageSrc, onClose, onConfirm }: Props)
         <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-3">
           <button
             type="button"
-            onClick={() => {
-              setZoom(1);
-              setOffsetX(0);
-              setOffsetY(0);
-            }}
-            className="text-xs text-slate-500 hover:text-slate-800 font-semibold underline"
+            onClick={handleResetSettings}
+            className="text-xs text-slate-600 hover:text-slate-900 font-semibold flex items-center gap-1"
           >
-            Réinitialiser cadrage
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Réinitialiser réglages</span>
           </button>
 
           <div className="flex items-center gap-2">

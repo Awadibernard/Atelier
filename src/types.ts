@@ -144,6 +144,25 @@ export interface CustomerInfo {
   city?: string;
 }
 
+export type LogoMaskShape = 'original' | 'square' | 'circle' | 'rounded';
+export type LogoBgColor = 'transparent' | 'white' | 'dark';
+
+export interface LogoEditSettings {
+  maskShape: LogoMaskShape;
+  zoom: number;
+  offsetX: number;
+  offsetY: number;
+  bgColor?: LogoBgColor;
+}
+
+export const DEFAULT_LOGO_EDIT_SETTINGS: LogoEditSettings = {
+  maskShape: 'original',
+  zoom: 1,
+  offsetX: 0,
+  offsetY: 0,
+  bgColor: 'transparent',
+};
+
 export interface BusinessProfile {
   name: string;
   tagline?: string;
@@ -154,7 +173,9 @@ export interface BusinessProfile {
   city?: string;
   country?: string;
   taxId?: string; // NIF / RCCM / SIRET
-  logoUrl?: string; // Data URL
+  logoUrl?: string; // Rendered / Processed Data URL (for PDF, print, display)
+  logoOriginalUrl?: string; // Original uploaded raw image Data URL (non-destructive master source)
+  logoEditSettings?: LogoEditSettings; // Applied crop / mask / zoom / pan parameters
   defaultCurrency: Currency;
   currencySymbol: string; // 'FCFA'
   defaultMarginPercent: number;
@@ -164,6 +185,15 @@ export interface BusinessProfile {
   defaultPaymentTerms?: string;
   defaultValidityDays: number;
   footerNotes?: string;
+  // Four independent system data visibility settings
+  showSystemTemplates?: boolean;
+  showPredefinedTemplates?: boolean; // Backward compatibility alias
+  showSystemTemplateCategories?: boolean;
+  showPredefinedTemplateCategories?: boolean; // Backward compatibility alias
+  showSystemMaterials?: boolean;
+  showPredefinedMaterials?: boolean; // Backward compatibility alias
+  showSystemMaterialCategories?: boolean;
+  showPredefinedMaterialCategories?: boolean; // Backward compatibility alias
 }
 
 export interface Quote {
@@ -202,12 +232,28 @@ export interface Quote {
   paymentTerms?: string;
 }
 
+export interface TemplateCategory {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  enabled?: boolean;
+}
+
+export interface MaterialCategory {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  enabled?: boolean;
+}
+
 export interface MaterialLibraryItem {
   id: string;
   name: string;
-  category: string;
+  categoryId?: string; // Stable category identifier
+  category: string; // Category display name (backward compatible)
   unit: MaterialUnit | string;
   defaultUnitPrice: number;
+  isCustom?: boolean;
   updatedAt: string;
 }
 
@@ -221,7 +267,8 @@ export interface LaborRateLibraryItem {
 export interface WorkshopTemplate {
   id: string;
   name: string;
-  category: 'metal' | 'bois' | 'alu' | 'autre';
+  categoryId: string; // Stable category identifier
+  category?: string; // Legacy compatibility alias
   description: string;
   icon?: string;
   isPremiumOnly?: boolean;
@@ -240,6 +287,127 @@ export interface WorkshopTemplate {
   _sessionTimestamp?: number;
 }
 
+export interface BackupSectionsConfig {
+  quotes: boolean;
+  materials: boolean;
+  customTemplates: boolean;
+  companyProfile: boolean;
+  logo: boolean;
+  settings: boolean;
+}
+
+export interface AppSettingsPayload {
+  defaultCurrency: Currency;
+  currencySymbol: string;
+  defaultMarginPercent: number;
+  defaultWastePercent: number;
+  defaultLaborRate: number;
+  defaultRounding: RoundingStep;
+  defaultPaymentTerms?: string;
+  defaultValidityDays: number;
+  footerNotes?: string;
+  showSystemTemplates?: boolean;
+  showPredefinedTemplates?: boolean;
+  showSystemTemplateCategories?: boolean;
+  showPredefinedTemplateCategories?: boolean;
+  showSystemMaterials?: boolean;
+  showPredefinedMaterials?: boolean;
+  showSystemMaterialCategories?: boolean;
+  showPredefinedMaterialCategories?: boolean;
+  laborRatesLibrary?: LaborRateLibraryItem[];
+}
+
+export interface AppBackupDataV2 {
+  version: 2;
+  app: 'AtelierDevis';
+  exportedAt: string;
+  sections: BackupSectionsConfig;
+  data: {
+    quotes?: Quote[];
+    materialsLibrary?: MaterialLibraryItem[];
+    materialCategories?: MaterialCategory[];
+    laborRatesLibrary?: LaborRateLibraryItem[];
+    customTemplates?: WorkshopTemplate[];
+    templateCategories?: TemplateCategory[];
+    companyProfile?: Partial<Omit<BusinessProfile, 'logoUrl' | 'logoOriginalUrl' | 'logoEditSettings'>>;
+    logo?: string;
+    logoOriginal?: string;
+    logoEditSettings?: LogoEditSettings;
+    settings?: Partial<AppSettingsPayload>;
+    entitlement?: UserEntitlement;
+  };
+}
+
+export type BackupFormatType = 'v2_structured' | 'v1_legacy' | 'partial_unversioned';
+
+export interface BackupParsedContent {
+  format: BackupFormatType;
+  version: number;
+  exportedAt?: string;
+  quotes: Quote[];
+  materials: MaterialLibraryItem[];
+  materialCategories: MaterialCategory[];
+  laborRates: LaborRateLibraryItem[];
+  customTemplates: WorkshopTemplate[];
+  allTemplates: WorkshopTemplate[];
+  templateCategories: TemplateCategory[];
+  companyProfile?: Partial<BusinessProfile>;
+  logo?: string;
+  logoOriginal?: string;
+  logoEditSettings?: LogoEditSettings;
+  settings?: Partial<AppSettingsPayload>;
+  availableSections: {
+    quotes: number;
+    materials: number;
+    customTemplates: number;
+    companyProfile: boolean;
+    logo: boolean;
+    settings: boolean;
+  };
+}
+
+export type ParseBackupResult =
+  | { success: true; parsed: BackupParsedContent; error?: never }
+  | { success: false; error: string; parsed?: never };
+
+export type ConflictType = 'material' | 'template' | 'quote' | 'laborRate';
+
+export type ImportConflictResolution = 'keep_current' | 'use_imported' | 'import_as_new' | 'skip';
+
+export interface ImportConflictItem {
+  id: string;
+  type: ConflictType;
+  title: string;
+  description: string;
+  currentDisplay: string;
+  importedDisplay: string;
+  currentItem: unknown;
+  importedItem: unknown;
+  resolution: ImportConflictResolution;
+}
+
+export type ImportMode = 'replace' | 'merge';
+
+export interface ImportExecutionOptions {
+  mode: ImportMode;
+  selectedSections: BackupSectionsConfig;
+  conflictResolutions: Record<string, ImportConflictResolution>;
+}
+
+export interface ImportExecutionResult {
+  success: boolean;
+  message: string;
+  stats: {
+    quotesImported: number;
+    materialsImported: number;
+    templatesImported: number;
+    profileUpdated: boolean;
+    logoUpdated: boolean;
+    settingsUpdated: boolean;
+    conflictsResolved: number;
+  };
+}
+
 export interface AppBackupData {
   version: number;
   exportedAt: string;
@@ -248,6 +416,8 @@ export interface AppBackupData {
   laborRatesLibrary: LaborRateLibraryItem[];
   quotes: Quote[];
   templates: WorkshopTemplate[];
+  templateCategories?: TemplateCategory[];
+  materialCategories?: MaterialCategory[];
   entitlement?: UserEntitlement;
 }
 

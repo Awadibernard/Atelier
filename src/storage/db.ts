@@ -1,34 +1,67 @@
 import {
   AppBackupData,
+  BackupSectionsConfig,
   BusinessProfile,
   CalculationInput,
   CalculationResult,
   DraftQuoteState,
+  ImportMode,
   LaborRateLibraryItem,
+  MaterialCategory,
   MaterialLibraryItem,
   Quote,
   RecentCalculation,
+  TemplateCategory,
   UserEntitlement,
   WorkshopTemplate,
 } from '../types';
 import { generateId, formatQuoteNumber } from '../utils/formatters';
 import { createDefaultFreeEntitlement } from '../licensing/licenseVerifier';
 import { isPremium, FREE_QUOTES_LIMIT } from '../licensing/features';
+import {
+  buildExportJSON,
+  parseAndValidateBackupJSON,
+  detectConflicts,
+  executeImport,
+  DEFAULT_BACKUP_SECTIONS,
+  CurrentDbSnapshot,
+} from './backupEngine';
 
 const STORAGE_KEYS = {
   PROFILE: 'atelier_devis_profile',
   MATERIALS: 'atelier_devis_materials',
+  MATERIAL_CATEGORIES: 'atelier_devis_material_categories',
   LABOR_RATES: 'atelier_devis_labor_rates',
   TEMPLATES: 'atelier_devis_templates',
+  TEMPLATE_CATEGORIES: 'atelier_devis_template_categories',
   QUOTES: 'atelier_devis_quotes',
   QUOTE_COUNTER: 'atelier_devis_quote_seq',
   RECENT_CALCULATIONS: 'atelier_devis_recent_calcs',
   DRAFT_CALCULATION: 'atelier_devis_draft_calc',
   DRAFT_QUOTE: 'atelier_devis_draft_quote',
   ENTITLEMENT: 'atelier_devis_entitlement',
+  ONBOARDING: 'atelier_devis_has_completed_onboarding',
 };
 
 export const DEFAULT_ENTITLEMENT: UserEntitlement = createDefaultFreeEntitlement();
+
+export const DEFAULT_TEMPLATE_CATEGORIES: TemplateCategory[] = [
+  { id: 'metal', name: 'Métallerie / Serrurerie / Inox', isDefault: true, enabled: true },
+  { id: 'bois', name: 'Menuiserie Bois', isDefault: true, enabled: true },
+  { id: 'alu', name: 'Menuiserie Aluminium', isDefault: true, enabled: true },
+  { id: 'autre', name: 'Autre ouvrage', isDefault: true, enabled: true },
+];
+
+export const DEFAULT_MATERIAL_CATEGORIES: MaterialCategory[] = [
+  { id: 'matcat-tubes', name: 'Tubes & Profilés', isDefault: true, enabled: true },
+  { id: 'matcat-toles', name: 'Tôles & Fers', isDefault: true, enabled: true },
+  { id: 'matcat-soudure', name: 'Soudure & Consommables', isDefault: true, enabled: true },
+  { id: 'matcat-peinture', name: 'Peinture & Finition', isDefault: true, enabled: true },
+  { id: 'matcat-quincaillerie', name: 'Quincaillerie & Accessoires', isDefault: true, enabled: true },
+  { id: 'matcat-bois', name: 'Bois & Menuiserie', isDefault: true, enabled: true },
+  { id: 'matcat-alu', name: 'Aluminium', isDefault: true, enabled: true },
+  { id: 'matcat-autre', name: 'Autre matériel', isDefault: true, enabled: true },
+];
 
 export const DEFAULT_PROFILE: BusinessProfile = {
   name: '',
@@ -49,12 +82,21 @@ export const DEFAULT_PROFILE: BusinessProfile = {
   defaultValidityDays: 30,
   defaultPaymentTerms: 'Acompte de 40% à la commande, solde à la livraison ou fin de pose.',
   footerNotes: 'Garantie sur soudures et structures. Devis valable 30 jours.',
+  showSystemTemplates: true,
+  showPredefinedTemplates: true,
+  showSystemTemplateCategories: true,
+  showPredefinedTemplateCategories: true,
+  showSystemMaterials: true,
+  showPredefinedMaterials: true,
+  showSystemMaterialCategories: true,
+  showPredefinedMaterialCategories: true,
 };
 
 export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-1',
     name: 'Tube carré 40×40 (ép. 1.5mm)',
+    categoryId: 'matcat-tubes',
     category: 'Tubes & Profilés',
     unit: 'm',
     defaultUnitPrice: 2000,
@@ -63,6 +105,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-2',
     name: 'Tube carré 30×30 (ép. 1.5mm)',
+    categoryId: 'matcat-tubes',
     category: 'Tubes & Profilés',
     unit: 'm',
     defaultUnitPrice: 1500,
@@ -71,6 +114,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-3',
     name: 'Tube rectangulaire 60×40',
+    categoryId: 'matcat-tubes',
     category: 'Tubes & Profilés',
     unit: 'm',
     defaultUnitPrice: 2800,
@@ -79,6 +123,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-4',
     name: 'Tôle plane noire 2mm',
+    categoryId: 'matcat-toles',
     category: 'Tôles & Fers',
     unit: 'm2',
     defaultUnitPrice: 5000,
@@ -87,6 +132,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-5',
     name: 'Tôle striée 3mm antidérapante',
+    categoryId: 'matcat-toles',
     category: 'Tôles & Fers',
     unit: 'm2',
     defaultUnitPrice: 8500,
@@ -95,6 +141,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-6',
     name: 'Fer cornière 30×30 (ép. 3mm)',
+    categoryId: 'matcat-toles',
     category: 'Tôles & Fers',
     unit: 'm',
     defaultUnitPrice: 1100,
@@ -103,6 +150,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-7',
     name: 'Fer plat 30×4',
+    categoryId: 'matcat-toles',
     category: 'Tôles & Fers',
     unit: 'm',
     defaultUnitPrice: 800,
@@ -111,6 +159,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-8',
     name: 'Fer rond plein Ø12',
+    categoryId: 'matcat-toles',
     category: 'Tôles & Fers',
     unit: 'm',
     defaultUnitPrice: 1200,
@@ -119,6 +168,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-9',
     name: 'Électrodes de soudure (Boîte 2.5kg)',
+    categoryId: 'matcat-soudure',
     category: 'Soudure & Consommables',
     unit: 'paquet',
     defaultUnitPrice: 4500,
@@ -127,6 +177,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-10',
     name: 'Disque à ébarber/tronçonner Ø115',
+    categoryId: 'matcat-soudure',
     category: 'Soudure & Consommables',
     unit: 'piece',
     defaultUnitPrice: 1000,
@@ -135,6 +186,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-11',
     name: 'Peinture antirouille & Finition (1L)',
+    categoryId: 'matcat-peinture',
     category: 'Peinture & Finition',
     unit: 'l',
     defaultUnitPrice: 4500,
@@ -143,6 +195,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-12',
     name: 'Diluant cellulosique (1L)',
+    categoryId: 'matcat-peinture',
     category: 'Peinture & Finition',
     unit: 'l',
     defaultUnitPrice: 2000,
@@ -151,6 +204,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-13',
     name: 'Paumelles soudables 100mm (paire)',
+    categoryId: 'matcat-quincaillerie',
     category: 'Quincaillerie & Accessoires',
     unit: 'piece',
     defaultUnitPrice: 1500,
@@ -159,6 +213,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-14',
     name: 'Serrure à canon pour tube métallique',
+    categoryId: 'matcat-quincaillerie',
     category: 'Quincaillerie & Accessoires',
     unit: 'piece',
     defaultUnitPrice: 8500,
@@ -167,6 +222,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-15',
     name: 'Planche bois massif Iroko / Teck',
+    categoryId: 'matcat-bois',
     category: 'Bois & Menuiserie',
     unit: 'm',
     defaultUnitPrice: 6000,
@@ -175,6 +231,7 @@ export const INITIAL_MATERIALS: MaterialLibraryItem[] = [
   {
     id: 'mat-16',
     name: 'Profilé aluminium tubulaire',
+    categoryId: 'matcat-alu',
     category: 'Aluminium',
     unit: 'm',
     defaultUnitPrice: 3500,
@@ -219,6 +276,7 @@ export const INITIAL_TEMPLATES: WorkshopTemplate[] = [
   {
     id: 'tpl-1',
     name: 'Porte métallique battante (2m × 0.9m)',
+    categoryId: 'metal',
     category: 'metal',
     isPremiumOnly: false,
     isCustom: false,
@@ -250,6 +308,7 @@ export const INITIAL_TEMPLATES: WorkshopTemplate[] = [
   {
     id: 'tpl-2',
     name: 'Grille de défense fenêtre (1.2m × 1.2m)',
+    categoryId: 'metal',
     category: 'metal',
     isPremiumOnly: false,
     isCustom: false,
@@ -278,6 +337,7 @@ export const INITIAL_TEMPLATES: WorkshopTemplate[] = [
   {
     id: 'tpl-3',
     name: 'Portail coulissant motorisable (3.5m × 2m)',
+    categoryId: 'metal',
     category: 'metal',
     isPremiumOnly: false,
     isCustom: false,
@@ -310,6 +370,7 @@ export const INITIAL_TEMPLATES: WorkshopTemplate[] = [
   {
     id: 'tpl-4',
     name: 'Table basse design industriel (1.2m × 0.6m)',
+    categoryId: 'bois',
     category: 'bois',
     isPremiumOnly: false,
     isCustom: false,
@@ -336,6 +397,7 @@ export const INITIAL_TEMPLATES: WorkshopTemplate[] = [
   {
     id: 'tpl-5',
     name: 'Pergola métallique sur mesure & Lames brise-soleil (4m × 3m)',
+    categoryId: 'metal',
     category: 'metal',
     isPremiumOnly: true,
     isCustom: false,
@@ -368,6 +430,7 @@ export const INITIAL_TEMPLATES: WorkshopTemplate[] = [
   {
     id: 'tpl-6',
     name: 'Escalier métallique industriel avec limon central (H 2.8m, 14 marches)',
+    categoryId: 'metal',
     category: 'metal',
     isPremiumOnly: true,
     isCustom: false,
@@ -401,6 +464,7 @@ export const INITIAL_TEMPLATES: WorkshopTemplate[] = [
   {
     id: 'tpl-7',
     name: 'Garde-corps Inox 304 & Câbles tendus (4m linéaire)',
+    categoryId: 'metal',
     category: 'metal',
     isPremiumOnly: true,
     isCustom: false,
@@ -454,7 +518,36 @@ function writeStorage<T>(key: string, data: T): void {
 export const db = {
   // Business profile
   getProfile(): BusinessProfile {
-    return readStorage<BusinessProfile>(STORAGE_KEYS.PROFILE, DEFAULT_PROFILE);
+    const profile = readStorage<BusinessProfile>(STORAGE_KEYS.PROFILE, DEFAULT_PROFILE);
+    const showSysTemplates =
+      profile.showSystemTemplates !== undefined
+        ? profile.showSystemTemplates !== false
+        : profile.showPredefinedTemplates !== false;
+    const showSysTplCats =
+      profile.showSystemTemplateCategories !== undefined
+        ? profile.showSystemTemplateCategories !== false
+        : profile.showPredefinedTemplateCategories !== false;
+    const showSysMaterials =
+      profile.showSystemMaterials !== undefined
+        ? profile.showSystemMaterials !== false
+        : profile.showPredefinedMaterials !== false;
+    const showSysMatCats =
+      profile.showSystemMaterialCategories !== undefined
+        ? profile.showSystemMaterialCategories !== false
+        : profile.showPredefinedMaterialCategories !== false;
+
+    return {
+      ...DEFAULT_PROFILE,
+      ...profile,
+      showSystemTemplates: showSysTemplates,
+      showPredefinedTemplates: showSysTemplates,
+      showSystemTemplateCategories: showSysTplCats,
+      showPredefinedTemplateCategories: showSysTplCats,
+      showSystemMaterials: showSysMaterials,
+      showPredefinedMaterials: showSysMaterials,
+      showSystemMaterialCategories: showSysMatCats,
+      showPredefinedMaterialCategories: showSysMatCats,
+    };
   },
 
   saveProfile(profile: BusinessProfile): void {
@@ -464,23 +557,68 @@ export const db = {
   // Materials library
   getMaterials(): MaterialLibraryItem[] {
     const stored = readStorage<MaterialLibraryItem[]>(STORAGE_KEYS.MATERIALS, []);
+    const categories = this.getMaterialCategories();
+    const catMap = new Map<string, string>(categories.map((c) => [c.id, c.name]));
+    const nameToIdMap = new Map<string, string>(categories.map((c) => [c.name.trim().toLowerCase(), c.id]));
+
     if (!stored || stored.length === 0) {
       writeStorage(STORAGE_KEYS.MATERIALS, INITIAL_MATERIALS);
       return INITIAL_MATERIALS;
     }
-    return stored;
+
+    return stored.map((item) => {
+      let catId = item.categoryId;
+      let catName = item.category;
+
+      if (!catId) {
+        const matchedId = catName ? nameToIdMap.get(catName.trim().toLowerCase()) : undefined;
+        catId = matchedId || 'matcat-autre';
+      }
+
+      if (!catName || catName === 'Général') {
+        catName = catMap.get(catId) || 'Autre matériel';
+      }
+
+      return {
+        ...item,
+        categoryId: catId,
+        category: catName,
+      };
+    });
   },
 
   saveMaterial(item: Omit<MaterialLibraryItem, 'id' | 'updatedAt'> & { id?: string }): MaterialLibraryItem {
     const materials = this.getMaterials();
     const existingIndex = item.id ? materials.findIndex((m) => m.id === item.id) : -1;
     const now = new Date().toISOString();
+    const categories = this.getMaterialCategories();
+
+    let categoryId = item.categoryId;
+    let categoryName = item.category;
+    if (categoryId) {
+      const found = categories.find((c) => c.id === categoryId);
+      if (found) {
+        categoryName = found.name;
+      }
+    } else if (categoryName) {
+      const found = categories.find((c) => c.name.trim().toLowerCase() === categoryName.trim().toLowerCase());
+      if (found) {
+        categoryId = found.id;
+      } else {
+        categoryId = 'matcat-autre';
+      }
+    } else {
+      categoryId = 'matcat-autre';
+      categoryName = 'Autre matériel';
+    }
 
     if (existingIndex >= 0 && item.id) {
       const updated: MaterialLibraryItem = {
         ...materials[existingIndex],
         ...item,
         id: item.id,
+        categoryId,
+        category: categoryName || 'Autre matériel',
         updatedAt: now,
       };
       materials[existingIndex] = updated;
@@ -490,7 +628,8 @@ export const db = {
       const newItem: MaterialLibraryItem = {
         id: generateId(),
         name: item.name,
-        category: item.category || 'Général',
+        categoryId,
+        category: categoryName || 'Autre matériel',
         unit: item.unit || 'piece',
         defaultUnitPrice: item.defaultUnitPrice || 0,
         updatedAt: now,
@@ -504,6 +643,143 @@ export const db = {
   deleteMaterial(id: string): void {
     const materials = this.getMaterials().filter((m) => m.id !== id);
     writeStorage(STORAGE_KEYS.MATERIALS, materials);
+  },
+
+  // Material Categories
+  getMaterialCategories(): MaterialCategory[] {
+    const stored = readStorage<MaterialCategory[]>(STORAGE_KEYS.MATERIAL_CATEGORIES, []);
+    if (!stored || stored.length === 0) {
+      writeStorage(STORAGE_KEYS.MATERIAL_CATEGORIES, DEFAULT_MATERIAL_CATEGORIES);
+      return DEFAULT_MATERIAL_CATEGORIES;
+    }
+
+    // Ensure all default system categories exist
+    const defaultIds = new Set(DEFAULT_MATERIAL_CATEGORIES.map((c) => c.id));
+    const result: MaterialCategory[] = DEFAULT_MATERIAL_CATEGORIES.map((def) => {
+      const existing = stored.find((s) => s.id === def.id);
+      return existing
+        ? { ...def, name: existing.name || def.name, isDefault: true, enabled: existing.enabled !== false }
+        : def;
+    });
+
+    // Append custom categories
+    for (const cat of stored) {
+      if (!defaultIds.has(cat.id)) {
+        result.push({
+          ...cat,
+          isDefault: false,
+          enabled: cat.enabled !== false,
+        });
+      }
+    }
+    return result;
+  },
+
+  saveMaterialCategory(cat: { id?: string; name: string; enabled?: boolean }): MaterialCategory {
+    const trimmedName = cat.name.trim();
+    if (!trimmedName) {
+      throw new Error('Le nom de la catégorie de matériau ne peut pas être vide.');
+    }
+    const categories = this.getMaterialCategories();
+    const defaultIds = new Set(DEFAULT_MATERIAL_CATEGORIES.map((c) => c.id));
+
+    // Check for duplicate name (case insensitive) among other categories
+    const duplicate = categories.find(
+      (c) => c.name.trim().toLowerCase() === trimmedName.toLowerCase() && c.id !== cat.id
+    );
+    if (duplicate) {
+      throw new Error(`Une catégorie de matériau portant le nom « ${trimmedName} » existe déjà.`);
+    }
+
+    if (cat.id) {
+      const index = categories.findIndex((c) => c.id === cat.id);
+      if (index >= 0) {
+        const isDef = defaultIds.has(cat.id) || categories[index].isDefault;
+        categories[index] = {
+          ...categories[index],
+          name: trimmedName,
+          enabled: cat.enabled !== undefined ? cat.enabled : categories[index].enabled !== false,
+          isDefault: isDef,
+        };
+        writeStorage(STORAGE_KEYS.MATERIAL_CATEGORIES, categories);
+        return categories[index];
+      }
+    }
+
+    // New category
+    const newId = `matcat-${generateId()}`;
+    if (defaultIds.has(newId)) {
+      throw new Error('Identifiant de catégorie réservé.');
+    }
+    const newCat: MaterialCategory = {
+      id: newId,
+      name: trimmedName,
+      isDefault: false,
+      enabled: cat.enabled !== undefined ? cat.enabled : true,
+    };
+    categories.push(newCat);
+    writeStorage(STORAGE_KEYS.MATERIAL_CATEGORIES, categories);
+    return newCat;
+  },
+
+  renameMaterialCategory(id: string, newName: string): MaterialCategory {
+    return this.saveMaterialCategory({ id, name: newName });
+  },
+
+  toggleMaterialCategoryEnabled(id: string, enabled?: boolean): MaterialCategory {
+    const categories = this.getMaterialCategories();
+    const index = categories.findIndex((c) => c.id === id);
+    if (index < 0) {
+      throw new Error('Catégorie introuvable.');
+    }
+
+    const currentEnabled = categories[index].enabled !== false;
+    const nextEnabled = enabled !== undefined ? enabled : !currentEnabled;
+    categories[index] = {
+      ...categories[index],
+      enabled: nextEnabled,
+    };
+    writeStorage(STORAGE_KEYS.MATERIAL_CATEGORIES, categories);
+    return categories[index];
+  },
+
+  deleteMaterialCategory(id: string, reassignToCategoryId: string): { reallocatedCount: number } {
+    const defaultIds = new Set(DEFAULT_MATERIAL_CATEGORIES.map((c) => c.id));
+    if (defaultIds.has(id)) {
+      throw new Error('Les catégories système par défaut ne peuvent pas être supprimées.');
+    }
+    const categories = this.getMaterialCategories();
+    const targetCat = categories.find((c) => c.id === reassignToCategoryId);
+    if (!targetCat) {
+      throw new Error('La catégorie de réassignation sélectionnée est introuvable.');
+    }
+    const deletedCat = categories.find((c) => c.id === id);
+
+    // Reassign all materials referencing `id` or deleted category name
+    const materials = this.getMaterials();
+    let reallocatedCount = 0;
+    const updatedMaterials = materials.map((mat) => {
+      if (mat.categoryId === id || (deletedCat && mat.category === deletedCat.name)) {
+        reallocatedCount++;
+        return {
+          ...mat,
+          categoryId: reassignToCategoryId,
+          category: targetCat.name,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      return mat;
+    });
+
+    if (reallocatedCount > 0) {
+      writeStorage(STORAGE_KEYS.MATERIALS, updatedMaterials);
+    }
+
+    // Filter out the deleted category
+    const remainingCategories = categories.filter((c) => c.id !== id);
+    writeStorage(STORAGE_KEYS.MATERIAL_CATEGORIES, remainingCategories);
+
+    return { reallocatedCount };
   },
 
   // Labor rates library
@@ -547,6 +823,141 @@ export const db = {
     writeStorage(STORAGE_KEYS.LABOR_RATES, rates);
   },
 
+  // Template Categories
+  getTemplateCategories(): TemplateCategory[] {
+    const stored = readStorage<TemplateCategory[]>(STORAGE_KEYS.TEMPLATE_CATEGORIES, []);
+    if (!stored || stored.length === 0) {
+      writeStorage(STORAGE_KEYS.TEMPLATE_CATEGORIES, DEFAULT_TEMPLATE_CATEGORIES);
+      return DEFAULT_TEMPLATE_CATEGORIES;
+    }
+
+    // Ensure all 4 default system categories exist
+    const defaultIds = new Set(DEFAULT_TEMPLATE_CATEGORIES.map((c) => c.id));
+    const result: TemplateCategory[] = DEFAULT_TEMPLATE_CATEGORIES.map((def) => {
+      const existing = stored.find((s) => s.id === def.id);
+      return existing
+        ? { ...def, name: existing.name || def.name, isDefault: true, enabled: existing.enabled !== false }
+        : def;
+    });
+
+    // Append custom categories
+    for (const cat of stored) {
+      if (!defaultIds.has(cat.id)) {
+        result.push({
+          ...cat,
+          isDefault: false,
+          enabled: cat.enabled !== false,
+        });
+      }
+    }
+    return result;
+  },
+
+  saveTemplateCategory(cat: { id?: string; name: string; enabled?: boolean }): TemplateCategory {
+    const trimmedName = cat.name.trim();
+    if (!trimmedName) {
+      throw new Error('Le nom de la catégorie de modèle ne peut pas être vide.');
+    }
+    const categories = this.getTemplateCategories();
+    const defaultIds = new Set(DEFAULT_TEMPLATE_CATEGORIES.map((c) => c.id));
+
+    // Check for duplicate name (case insensitive) among other categories
+    const duplicate = categories.find(
+      (c) => c.name.trim().toLowerCase() === trimmedName.toLowerCase() && c.id !== cat.id
+    );
+    if (duplicate) {
+      throw new Error(`Une catégorie de modèle portant le nom « ${trimmedName} » existe déjà.`);
+    }
+
+    if (cat.id) {
+      const index = categories.findIndex((c) => c.id === cat.id);
+      if (index >= 0) {
+        const isDef = defaultIds.has(cat.id) || categories[index].isDefault;
+        categories[index] = {
+          ...categories[index],
+          name: trimmedName,
+          enabled: cat.enabled !== undefined ? cat.enabled : categories[index].enabled !== false,
+          isDefault: isDef,
+        };
+        writeStorage(STORAGE_KEYS.TEMPLATE_CATEGORIES, categories);
+        return categories[index];
+      }
+    }
+
+    // New category
+    const newId = `cat-${generateId()}`;
+    if (defaultIds.has(newId)) {
+      throw new Error('Identifiant de catégorie réservé.');
+    }
+    const newCat: TemplateCategory = {
+      id: newId,
+      name: trimmedName,
+      isDefault: false,
+      enabled: cat.enabled !== undefined ? cat.enabled : true,
+    };
+    categories.push(newCat);
+    writeStorage(STORAGE_KEYS.TEMPLATE_CATEGORIES, categories);
+    return newCat;
+  },
+
+  renameTemplateCategory(id: string, newName: string): TemplateCategory {
+    return this.saveTemplateCategory({ id, name: newName });
+  },
+
+  toggleTemplateCategoryEnabled(id: string, enabled?: boolean): TemplateCategory {
+    const categories = this.getTemplateCategories();
+    const index = categories.findIndex((c) => c.id === id);
+    if (index < 0) {
+      throw new Error('Catégorie introuvable.');
+    }
+
+    const currentEnabled = categories[index].enabled !== false;
+    const nextEnabled = enabled !== undefined ? enabled : !currentEnabled;
+    categories[index] = {
+      ...categories[index],
+      enabled: nextEnabled,
+    };
+    writeStorage(STORAGE_KEYS.TEMPLATE_CATEGORIES, categories);
+    return categories[index];
+  },
+
+  deleteTemplateCategory(id: string, reassignToCategoryId: string): { reallocatedCount: number } {
+    const defaultIds = new Set(DEFAULT_TEMPLATE_CATEGORIES.map((c) => c.id));
+    if (defaultIds.has(id)) {
+      throw new Error('Les catégories système par défaut ne peuvent pas être supprimées.');
+    }
+    const categories = this.getTemplateCategories();
+    const targetCat = categories.find((c) => c.id === reassignToCategoryId);
+    if (!targetCat) {
+      throw new Error('La catégorie de réassignation sélectionnée est introuvable.');
+    }
+
+    // Reassign all templates referencing `id`
+    const templates = this.getTemplates();
+    let reallocatedCount = 0;
+    const updatedTemplates = templates.map((tpl) => {
+      if (tpl.categoryId === id || tpl.category === id) {
+        reallocatedCount++;
+        return {
+          ...tpl,
+          categoryId: reassignToCategoryId,
+          category: reassignToCategoryId,
+        };
+      }
+      return tpl;
+    });
+
+    if (reallocatedCount > 0) {
+      writeStorage(STORAGE_KEYS.TEMPLATES, updatedTemplates);
+    }
+
+    // Filter out the deleted category
+    const remainingCategories = categories.filter((c) => c.id !== id);
+    writeStorage(STORAGE_KEYS.TEMPLATE_CATEGORIES, remainingCategories);
+
+    return { reallocatedCount };
+  },
+
   // Templates
   getTemplates(): WorkshopTemplate[] {
     const stored = readStorage<WorkshopTemplate[]>(STORAGE_KEYS.TEMPLATES, []);
@@ -559,11 +970,19 @@ export const db = {
     const builtInIds = new Set(INITIAL_TEMPLATES.map((t) => t.id));
     const userCustomTemplates = stored.filter((t) => !builtInIds.has(t.id) || t.isCustom);
 
-    const result: WorkshopTemplate[] = [...INITIAL_TEMPLATES];
+    const result: WorkshopTemplate[] = INITIAL_TEMPLATES.map((t) => ({
+      ...t,
+      categoryId: t.categoryId || t.category || 'autre',
+      category: t.categoryId || t.category || 'autre',
+    }));
+
     for (const custom of userCustomTemplates) {
       if (!result.some((r) => r.id === custom.id)) {
+        const catId = custom.categoryId || custom.category || 'autre';
         result.push({
           ...custom,
+          categoryId: catId,
+          category: catId,
           isCustom: true,
         });
       }
@@ -575,12 +994,15 @@ export const db = {
     const list = this.getTemplates();
     const existingIndex = tpl.id ? list.findIndex((t) => t.id === tpl.id) : -1;
     const now = new Date().toISOString();
+    const categoryId = tpl.categoryId || tpl.category || 'autre';
 
     if (existingIndex >= 0 && tpl.id) {
       const updated: WorkshopTemplate = {
         ...list[existingIndex],
         ...tpl,
         id: tpl.id,
+        categoryId,
+        category: categoryId,
         isCustom: list[existingIndex].isCustom ?? true,
         updatedAt: now,
       };
@@ -591,6 +1013,8 @@ export const db = {
       const newTpl: WorkshopTemplate = {
         ...tpl,
         id: tpl.id || generateId(),
+        categoryId,
+        category: categoryId,
         isCustom: tpl.isCustom !== undefined ? tpl.isCustom : true,
         isPremiumOnly: tpl.isPremiumOnly ?? false,
         createdAt: now,
@@ -759,194 +1183,95 @@ export const db = {
     writeStorage(STORAGE_KEYS.ENTITLEMENT, DEFAULT_ENTITLEMENT);
   },
 
-  // Backup and Restore
-  exportAllData(): string {
-    const backup: AppBackupData = {
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      businessProfile: this.getProfile(),
-      materialsLibrary: this.getMaterials(),
-      laborRatesLibrary: this.getLaborRates(),
+  getDbSnapshot(): CurrentDbSnapshot {
+    return {
+      profile: this.getProfile(),
       quotes: this.getQuotes(),
+      materials: this.getMaterials(),
+      materialCategories: this.getMaterialCategories(),
+      laborRates: this.getLaborRates(),
       templates: this.getTemplates(),
-      entitlement: this.getEntitlement(),
+      templateCategories: this.getTemplateCategories(),
     };
-    return JSON.stringify(backup, null, 2);
+  },
+
+  applyDbSnapshot(snapshot: CurrentDbSnapshot): void {
+    writeStorage(STORAGE_KEYS.PROFILE, snapshot.profile);
+    writeStorage(STORAGE_KEYS.QUOTES, snapshot.quotes);
+    writeStorage(STORAGE_KEYS.MATERIALS, snapshot.materials);
+    writeStorage(STORAGE_KEYS.MATERIAL_CATEGORIES, snapshot.materialCategories);
+    writeStorage(STORAGE_KEYS.LABOR_RATES, snapshot.laborRates);
+    writeStorage(STORAGE_KEYS.TEMPLATES, snapshot.templates);
+    writeStorage(STORAGE_KEYS.TEMPLATE_CATEGORIES, snapshot.templateCategories);
+  },
+
+  // Backup and Restore
+  exportAllData(sections: BackupSectionsConfig = DEFAULT_BACKUP_SECTIONS): string {
+    return buildExportJSON(sections, this.getDbSnapshot());
   },
 
   importAllData(
     jsonString: string,
     mode: 'restore' | 'merge' = 'restore'
   ): { success: boolean; message: string; quotesCount?: number; materialsCount?: number } {
-    let data: Partial<AppBackupData>;
-    try {
-      data = JSON.parse(jsonString) as Partial<AppBackupData>;
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : 'Erreur de syntaxe JSON inconnue';
+    const parseRes = parseAndValidateBackupJSON(jsonString);
+    if (parseRes.success === false) {
       return {
         success: false,
-        message: `Import impossible : le fichier JSON est corrompu ou invalide.\nErreur détectée : ${errMsg}.\nAucune donnée existante n'a été modifiée.`,
+        message: parseRes.error,
       };
     }
 
-    if (!data || typeof data !== 'object') {
+    const currentSnapshot = this.getDbSnapshot();
+    const importMode: ImportMode = mode === 'restore' ? 'replace' : 'merge';
+    const selectedSections: BackupSectionsConfig = {
+      quotes: parseRes.parsed.availableSections.quotes > 0,
+      materials: parseRes.parsed.availableSections.materials > 0,
+      customTemplates: parseRes.parsed.availableSections.customTemplates > 0,
+      companyProfile: parseRes.parsed.availableSections.companyProfile,
+      logo: parseRes.parsed.availableSections.logo,
+      settings: parseRes.parsed.availableSections.settings,
+    };
+
+    const conflicts = detectConflicts(parseRes.parsed, selectedSections, currentSnapshot);
+    const conflictResolutions: Record<string, 'keep_current' | 'use_imported' | 'import_as_new' | 'skip'> = {};
+    conflicts.forEach((c) => {
+      conflictResolutions[c.id] = c.resolution;
+    });
+
+    const execution = executeImport(
+      parseRes.parsed,
+      {
+        mode: importMode,
+        selectedSections,
+        conflictResolutions,
+      },
+      currentSnapshot
+    );
+
+    if (execution.success) {
+      this.applyDbSnapshot(execution.nextDbState);
       return {
-        success: false,
-        message: "Format invalide : l'archive importée doit être un objet JSON valide.",
+        success: true,
+        message: execution.message,
+        quotesCount: execution.result.stats.quotesImported,
+        materialsCount: execution.result.stats.materialsImported,
       };
     }
 
-    try {
-      if (mode === 'restore') {
-        // Complete replacement
-        if (data.businessProfile) {
-          writeStorage(STORAGE_KEYS.PROFILE, data.businessProfile);
-        }
-        if (Array.isArray(data.materialsLibrary)) {
-          writeStorage(STORAGE_KEYS.MATERIALS, data.materialsLibrary);
-        }
-        if (Array.isArray(data.laborRatesLibrary)) {
-          writeStorage(STORAGE_KEYS.LABOR_RATES, data.laborRatesLibrary);
-        }
-        if (Array.isArray(data.templates)) {
-          writeStorage(STORAGE_KEYS.TEMPLATES, data.templates);
-        }
-        if (Array.isArray(data.quotes)) {
-          writeStorage(STORAGE_KEYS.QUOTES, data.quotes);
-        }
-        if (data.entitlement) {
-          writeStorage(STORAGE_KEYS.ENTITLEMENT, data.entitlement);
-        }
-
-        return {
-          success: true,
-          message: `Sauvegarde restaurée avec succès (${data.quotes?.length || 0} devis, ${data.materialsLibrary?.length || 0} matériaux).`,
-          quotesCount: data.quotes?.length || 0,
-        };
-      } else {
-        // Merge mode (adds without destroying current records)
-        let addedQuotes = 0;
-        let addedMaterials = 0;
-        let addedLabor = 0;
-        let addedTemplates = 0;
-
-        // 1. Merge Materials
-        if (Array.isArray(data.materialsLibrary) && data.materialsLibrary.length > 0) {
-          const currentMats = this.getMaterials();
-          const existingNames = new Set(currentMats.map((m) => m.name.trim().toLowerCase()));
-          const newMats = [...currentMats];
-
-          for (const mat of data.materialsLibrary) {
-            if (mat && mat.name && !existingNames.has(mat.name.trim().toLowerCase())) {
-              newMats.push({
-                ...mat,
-                id: generateId(),
-                updatedAt: new Date().toISOString(),
-              });
-              existingNames.add(mat.name.trim().toLowerCase());
-              addedMaterials++;
-            }
-          }
-          writeStorage(STORAGE_KEYS.MATERIALS, newMats);
-        }
-
-        // 2. Merge Labor Rates
-        if (Array.isArray(data.laborRatesLibrary) && data.laborRatesLibrary.length > 0) {
-          const currentRates = this.getLaborRates();
-          const existingTasks = new Set(currentRates.map((r) => r.task.trim().toLowerCase()));
-          const newRates = [...currentRates];
-
-          for (const rate of data.laborRatesLibrary) {
-            if (rate && rate.task && !existingTasks.has(rate.task.trim().toLowerCase())) {
-              newRates.push({
-                ...rate,
-                id: generateId(),
-              });
-              existingTasks.add(rate.task.trim().toLowerCase());
-              addedLabor++;
-            }
-          }
-          writeStorage(STORAGE_KEYS.LABOR_RATES, newRates);
-        }
-
-        // 3. Merge Templates
-        if (Array.isArray(data.templates) && data.templates.length > 0) {
-          const currentTpls = this.getTemplates();
-          const existingTplNames = new Set(currentTpls.map((t) => t.name.trim().toLowerCase()));
-          const newTpls = [...currentTpls];
-
-          for (const tpl of data.templates) {
-            if (tpl && tpl.name && !existingTplNames.has(tpl.name.trim().toLowerCase())) {
-              newTpls.push({
-                ...tpl,
-                id: generateId(),
-              });
-              existingTplNames.add(tpl.name.trim().toLowerCase());
-              addedTemplates++;
-            }
-          }
-          writeStorage(STORAGE_KEYS.TEMPLATES, newTpls);
-        }
-
-        // 4. Merge Quotes
-        if (Array.isArray(data.quotes) && data.quotes.length > 0) {
-          const currentQuotes = this.getQuotes();
-          const existingIds = new Set(currentQuotes.map((q) => q.id));
-          const existingNumbers = new Set(currentQuotes.map((q) => q.quoteNumber));
-          const newQuotes = [...currentQuotes];
-
-          for (const q of data.quotes) {
-            if (q && q.projectTitle) {
-              const newId = existingIds.has(q.id) ? generateId() : q.id;
-              const newNumber = existingNumbers.has(q.quoteNumber)
-                ? `${q.quoteNumber}-IMP`
-                : q.quoteNumber;
-
-              newQuotes.push({
-                ...q,
-                id: newId,
-                quoteNumber: newNumber,
-              });
-              existingIds.add(newId);
-              existingNumbers.add(newNumber);
-              addedQuotes++;
-            }
-          }
-          writeStorage(STORAGE_KEYS.QUOTES, newQuotes);
-        }
-
-        // 5. Profile fields merge (fill missing empty fields)
-        if (data.businessProfile) {
-          const currentProfile = this.getProfile();
-          const updatedProfile: BusinessProfile = { ...currentProfile };
-          if (!updatedProfile.phone && data.businessProfile.phone) updatedProfile.phone = data.businessProfile.phone;
-          if (!updatedProfile.whatsapp && data.businessProfile.whatsapp) updatedProfile.whatsapp = data.businessProfile.whatsapp;
-          if (!updatedProfile.email && data.businessProfile.email) updatedProfile.email = data.businessProfile.email;
-          if (!updatedProfile.address && data.businessProfile.address) updatedProfile.address = data.businessProfile.address;
-          if (!updatedProfile.city && data.businessProfile.city) updatedProfile.city = data.businessProfile.city;
-          if (!updatedProfile.taxId && data.businessProfile.taxId) updatedProfile.taxId = data.businessProfile.taxId;
-          if (!updatedProfile.logoUrl && data.businessProfile.logoUrl) updatedProfile.logoUrl = data.businessProfile.logoUrl;
-          writeStorage(STORAGE_KEYS.PROFILE, updatedProfile);
-        }
-
-        return {
-          success: true,
-          message: `Fusion réussie ! +${addedQuotes} devis, +${addedMaterials} matériaux, +${addedLabor} taux de main-d'œuvre et +${addedTemplates} modèles ajoutés.`,
-          quotesCount: addedQuotes,
-          materialsCount: addedMaterials,
-        };
-      }
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : 'Erreur inconnue';
-      return { success: false, message: `Échec de l'application des données : ${errMsg}` };
-    }
+    return {
+      success: false,
+      message: execution.message,
+    };
   },
 
   resetToFactoryDefaults(): void {
     writeStorage(STORAGE_KEYS.PROFILE, DEFAULT_PROFILE);
     writeStorage(STORAGE_KEYS.MATERIALS, INITIAL_MATERIALS);
+    writeStorage(STORAGE_KEYS.MATERIAL_CATEGORIES, DEFAULT_MATERIAL_CATEGORIES);
     writeStorage(STORAGE_KEYS.LABOR_RATES, INITIAL_LABOR_RATES);
     writeStorage(STORAGE_KEYS.TEMPLATES, INITIAL_TEMPLATES);
+    writeStorage(STORAGE_KEYS.TEMPLATE_CATEGORIES, DEFAULT_TEMPLATE_CATEGORIES);
     writeStorage(STORAGE_KEYS.QUOTES, []);
     writeStorage(STORAGE_KEYS.QUOTE_COUNTER, 1);
     writeStorage(STORAGE_KEYS.RECENT_CALCULATIONS, []);
@@ -964,12 +1289,22 @@ export const saveProfile = (profile: BusinessProfile) => db.saveProfile(profile)
 export const getMaterials = () => db.getMaterials();
 export const saveMaterial = (item: Omit<MaterialLibraryItem, 'id' | 'updatedAt'> & { id?: string }) => db.saveMaterial(item);
 export const deleteMaterial = (id: string) => db.deleteMaterial(id);
+export const getMaterialCategories = () => db.getMaterialCategories();
+export const saveMaterialCategory = (cat: { id?: string; name: string; enabled?: boolean }) => db.saveMaterialCategory(cat);
+export const renameMaterialCategory = (id: string, newName: string) => db.renameMaterialCategory(id, newName);
+export const toggleMaterialCategoryEnabled = (id: string, enabled?: boolean) => db.toggleMaterialCategoryEnabled(id, enabled);
+export const deleteMaterialCategory = (id: string, reassignToCategoryId: string) => db.deleteMaterialCategory(id, reassignToCategoryId);
 export const getLaborRates = () => db.getLaborRates();
 export const saveLaborRate = (item: Omit<LaborRateLibraryItem, 'id'> & { id?: string }) => db.saveLaborRate(item);
 export const deleteLaborRate = (id: string) => db.deleteLaborRate(id);
 export const getTemplates = () => db.getTemplates();
 export const saveTemplate = (tpl: Omit<WorkshopTemplate, 'id'> & { id?: string }) => db.saveTemplate(tpl);
 export const deleteTemplate = (id: string) => db.deleteTemplate(id);
+export const getTemplateCategories = () => db.getTemplateCategories();
+export const saveTemplateCategory = (cat: { id?: string; name: string; enabled?: boolean }) => db.saveTemplateCategory(cat);
+export const renameTemplateCategory = (id: string, newName: string) => db.renameTemplateCategory(id, newName);
+export const toggleTemplateCategoryEnabled = (id: string, enabled?: boolean) => db.toggleTemplateCategoryEnabled(id, enabled);
+export const deleteTemplateCategory = (id: string, reassignToCategoryId: string) => db.deleteTemplateCategory(id, reassignToCategoryId);
 export const getQuotes = () => db.getQuotes();
 export const getQuoteById = (id: string) => db.getQuoteById(id);
 export const getNextQuoteNumber = () => db.getNextQuoteNumber();
@@ -987,8 +1322,40 @@ export const saveRecentCalculation = (title: string, input: CalculationInput, re
 export const getEntitlement = () => db.getEntitlement();
 export const saveEntitlement = (entitlement: UserEntitlement) => db.saveEntitlement(entitlement);
 export const resetEntitlement = () => db.resetEntitlement();
-export const exportDatabaseJSON = () => db.exportAllData();
+export const getDbSnapshot = (): CurrentDbSnapshot => db.getDbSnapshot();
+export const applyDbSnapshot = (snapshot: CurrentDbSnapshot) => db.applyDbSnapshot(snapshot);
+export const exportDatabaseJSON = (sections?: BackupSectionsConfig) => db.exportAllData(sections);
 export const importDatabaseJSON = (jsonString: string, mode: 'restore' | 'merge' = 'restore') => db.importAllData(jsonString, mode);
 export const resetToFactoryDefaults = () => db.resetToFactoryDefaults();
+
+export const hasCompletedOnboarding = (): boolean => {
+  try {
+    return localStorage.getItem('atelier_devis_has_completed_onboarding') === 'true';
+  } catch {
+    return false;
+  }
+};
+
+export const setOnboardingCompleted = (completed: boolean = true): void => {
+  try {
+    if (completed) {
+      localStorage.setItem('atelier_devis_has_completed_onboarding', 'true');
+    } else {
+      localStorage.removeItem('atelier_devis_has_completed_onboarding');
+    }
+  } catch {
+    // Graceful storage fallback
+  }
+};
+
+export * from './backupEngine';
+
+// Helper to determine whether a material is a predefined system material
+const INITIAL_MATERIAL_IDS = new Set(INITIAL_MATERIALS.map((m) => m.id));
+export const isSystemMaterial = (item: MaterialLibraryItem): boolean => {
+  if (item.isCustom === true) return false;
+  if (item.isCustom === false) return true;
+  return INITIAL_MATERIAL_IDS.has(item.id) || /^mat-[0-9]+$/.test(item.id);
+};
 
 

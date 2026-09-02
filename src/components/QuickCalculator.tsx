@@ -35,6 +35,7 @@ import {
   PricingMode,
   RoundingStep,
   WorkshopTemplate,
+  TemplateCategory,
   BusinessProfile,
   Quote,
   UserEntitlement,
@@ -45,7 +46,7 @@ import { isPremium } from '../licensing/features';
 import { PremiumGateModal } from './licensing/PremiumGateModal';
 import { CalculationBreakdownModal } from './CalculationBreakdownModal';
 import { NumberStepper } from './NumberStepper';
-import { getDraftCalculation, saveDraftCalculation, clearDraftCalculation, clearDraftQuote } from '../storage/db';
+import { getDraftCalculation, saveDraftCalculation, clearDraftCalculation, clearDraftQuote, isSystemMaterial } from '../storage/db';
 import { useNotification } from '../context/NotificationContext';
 import { focusAndScrollToField } from '../utils/formValidation';
 
@@ -56,8 +57,16 @@ interface Props {
   laborRatesLibrary?: LaborRateLibraryItem[];
   laborLibrary?: LaborRateLibraryItem[];
   templates?: WorkshopTemplate[];
+  categories?: TemplateCategory[];
   initialCalculation?: CalculationInput;
   initialTemplate?: WorkshopTemplate | null;
+  templateCreationContext?: {
+    name: string;
+    categoryId: string;
+    description?: string;
+  } | null;
+  onCancelTemplateCreation?: () => void;
+  onFinishTemplateCreation?: () => void;
   onConsumeTemplate?: () => void;
   editingQuote?: Quote | null;
   onConvertToQuote?: (input: CalculationInput, result: CalculationResult) => void;
@@ -92,8 +101,12 @@ export function QuickCalculator({
   laborRatesLibrary,
   laborLibrary,
   templates = [],
+  categories = [],
   initialCalculation,
   initialTemplate,
+  templateCreationContext,
+  onCancelTemplateCreation,
+  onFinishTemplateCreation,
   onConsumeTemplate,
   editingQuote,
   onConvertToQuote,
@@ -107,10 +120,45 @@ export function QuickCalculator({
   entitlement,
   onOpenPremiumModal,
 }: Props) {
-  const allMaterials = materialsLibrary || materialLibrary || [];
+  const rawMaterials = materialsLibrary || materialLibrary || [];
   const allLaborRates = laborRatesLibrary || laborLibrary || [];
   const handleQuoteClick = onGenerateQuote || onConvertToQuote;
   const currency = profile.currencySymbol || 'FCFA';
+
+  const showSysTemplates =
+    profile.showSystemTemplates !== false && profile.showPredefinedTemplates !== false;
+  const showSysMaterials =
+    profile.showSystemMaterials !== false && profile.showPredefinedMaterials !== false;
+
+  const allMaterials = useMemo(() => {
+    if (!showSysMaterials) {
+      return rawMaterials.filter((m) => !isSystemMaterial(m));
+    }
+    return rawMaterials;
+  }, [rawMaterials, showSysMaterials]);
+
+  // Helper creators for empty editable initial rows
+  const createEmptyMaterialRow = (): MaterialItem => ({
+    id: generateId(),
+    name: '',
+    quantity: 0,
+    unit: 'piece',
+    unitPrice: 0,
+  });
+
+  const createEmptyLaborRow = (): LaborItem => ({
+    id: generateId(),
+    task: '',
+    hours: 0,
+    hourlyRate: 0,
+  });
+
+  const createEmptyOtherCostRow = (): OtherCostItem => ({
+    id: generateId(),
+    description: '',
+    amount: 0,
+    category: 'autre',
+  });
 
   // Strict Restoration Priority:
   // Priority 1: initialCalculation (explicit source calculation passed as prop)
@@ -139,10 +187,10 @@ export function QuickCalculator({
     return null;
   }, [initialCalculation, editingQuote, initialTemplate, profile]);
 
-  // State initialization from draft
+  // State initialization from draft or pre-seeded empty editable rows for blank calculations
   const [materials, setMaterials] = useState<MaterialItem[]>(() => {
-    if (draft?.materials) return draft.materials;
-    return [];
+    if (draft?.materials && draft.materials.length > 0) return draft.materials;
+    return [createEmptyMaterialRow()];
   });
 
   const [wastePercent, setWastePercent] = useState<number>(() => {
@@ -151,13 +199,13 @@ export function QuickCalculator({
   });
 
   const [labor, setLabor] = useState<LaborItem[]>(() => {
-    if (draft?.labor) return draft.labor;
-    return [];
+    if (draft?.labor && draft.labor.length > 0) return draft.labor;
+    return [createEmptyLaborRow()];
   });
 
   const [otherCosts, setOtherCosts] = useState<OtherCostItem[]>(() => {
-    if (draft?.otherCosts) return draft.otherCosts;
-    return [];
+    if (draft?.otherCosts && draft.otherCosts.length > 0) return draft.otherCosts;
+    return [createEmptyOtherCostRow()];
   });
 
   const [overheadType, setOverheadType] = useState<OverheadType>(
@@ -188,11 +236,69 @@ export function QuickCalculator({
   // Global notification system
   const { showSuccess, showInfo, showError, showWarning } = useNotification();
 
+  // Reset to fresh blank calculation when templateCreationContext is active
+  useEffect(() => {
+    if (templateCreationContext) {
+      setMaterials([createEmptyMaterialRow()]);
+      setLabor([createEmptyLaborRow()]);
+      setOtherCosts([createEmptyOtherCostRow()]);
+      setWastePercent(profile.defaultWastePercent ?? 5);
+      setTargetProfitPercent(profile.defaultMarginPercent ?? 25);
+      setOverheadValue(0);
+      setOverheadType('percent');
+      setPricingMode('margin');
+      setRoundingStep(profile.defaultRounding || 'none');
+      setSelectedTemplateId('');
+    }
+  }, [templateCreationContext, profile]);
+
+  const categoryNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    categories.forEach((c) => map.set(c.id, c.name));
+    return map;
+  }, [categories]);
+
+  // Alphabetically sorted template groups for the quick loader dropdown
+  const customTemplatesSorted = useMemo(() => {
+    return templates
+      .filter((t) => t.isCustom)
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr', { sensitivity: 'base', numeric: true }));
+  }, [templates]);
+
+  const premiumTemplatesSorted = useMemo(() => {
+    return templates
+      .filter((t) => t.isPremiumOnly)
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr', { sensitivity: 'base', numeric: true }));
+  }, [templates]);
+
+  const freeTemplatesSorted = useMemo(() => {
+    return templates
+      .filter((t) => !t.isPremiumOnly && !t.isCustom)
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr', { sensitivity: 'base', numeric: true }));
+  }, [templates]);
+
   // Save as Custom Template modal & state
   const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState('');
-  const [newTemplateCategory, setNewTemplateCategory] = useState<'metal' | 'bois' | 'alu' | 'autre'>('metal');
+  const [newTemplateCategoryId, setNewTemplateCategoryId] = useState<string>('metal');
   const [newTemplateDescription, setNewTemplateDescription] = useState('');
+
+  const availableTemplateCategories = useMemo(() => {
+    const base = categories && categories.length > 0 ? categories : [
+      { id: 'metal', name: 'Métallerie / Serrurerie / Fer forgé', isDefault: true, enabled: true },
+      { id: 'bois', name: 'Menuiserie Bois', isDefault: true, enabled: true },
+      { id: 'alu', name: 'Menuiserie Aluminium', isDefault: true, enabled: true },
+      { id: 'autre', name: 'Autre structure / Spécialisé', isDefault: true, enabled: true },
+    ];
+    const showSysTemplateCategories =
+      profile.showSystemTemplateCategories !== false &&
+      profile.showPredefinedTemplateCategories !== false;
+    if (!showSysTemplateCategories) {
+      const customOnly = base.filter((c) => !c.isDefault);
+      return customOnly.length > 0 ? customOnly : base;
+    }
+    return base;
+  }, [categories, profile.showSystemTemplateCategories, profile.showPredefinedTemplateCategories]);
 
   // Premium gate modal state
   const [gateModalOpen, setGateModalOpen] = useState(false);
@@ -475,26 +581,49 @@ export function QuickCalculator({
       ? `Ouvrage (${firstMat})`
       : 'Mon Modèle sur mesure';
     setNewTemplateName(suggested);
-    setNewTemplateCategory(loadedTemplate?.category || 'metal');
+    const initialCatId = loadedTemplate?.categoryId || (loadedTemplate?.category as string) || (categories && categories[0]?.id) || 'autre';
+    setNewTemplateCategoryId(initialCatId);
     setNewTemplateDescription(loadedTemplate?.description || '');
     setShowSaveTemplateModal(true);
   };
+
+  // Helper: check if a row is completely empty/unfilled
+  const isMaterialEmpty = (m: MaterialItem | Omit<MaterialItem, 'id'>) =>
+    !m.name?.trim() && (!m.unitPrice || m.unitPrice === 0) && (!m.quantity || m.quantity === 0);
+
+  const isLaborEmpty = (l: LaborItem | Omit<LaborItem, 'id'>) =>
+    !l.task?.trim() && (!l.hourlyRate || l.hourlyRate === 0) && (!l.hours || l.hours === 0);
+
+  const isOtherCostEmpty = (o: OtherCostItem | Omit<OtherCostItem, 'id'>) =>
+    !o.description?.trim() && (!o.amount || o.amount === 0);
 
   // Explicit action: "Update existing custom template"
   const handleUpdateCurrentTemplate = () => {
     if (!loadedTemplate || !loadedTemplate.isCustom) return;
     if (onSaveTemplate) {
       try {
+        // Filter out empty rows so they don't pollute saved templates
+        const validMaterials = materials
+          .filter((m) => !isMaterialEmpty(m))
+          .map(({ id, ...m }) => ({ ...m }));
+        const validLabor = labor
+          .filter((l) => !isLaborEmpty(l))
+          .map(({ id, ...l }) => ({ ...l }));
+        const validOtherCosts = otherCosts
+          .filter((o) => !isOtherCostEmpty(o))
+          .map(({ id, ...o }) => ({ ...o }));
+
         onSaveTemplate({
           id: loadedTemplate.id,
           name: loadedTemplate.name,
+          categoryId: loadedTemplate.categoryId || (loadedTemplate.category as string) || 'autre',
           category: loadedTemplate.category,
           description: loadedTemplate.description,
           isCustom: true,
           isPremiumOnly: false,
-          defaultMaterials: materials.map(({ id, ...m }) => ({ ...m })),
-          defaultLabor: labor.map(({ id, ...l }) => ({ ...l })),
-          defaultOtherCosts: otherCosts.map(({ id, ...o }) => ({ ...o })),
+          defaultMaterials: validMaterials,
+          defaultLabor: validLabor,
+          defaultOtherCosts: validOtherCosts,
           wastePercent,
           targetMarginPercent: targetProfitPercent,
           overheadType,
@@ -523,15 +652,29 @@ export function QuickCalculator({
 
     if (onSaveTemplate) {
       try {
+        // Filter out empty rows so they don't pollute saved templates
+        const validMaterials = materials
+          .filter((m) => !isMaterialEmpty(m))
+          .map(({ id, ...m }) => ({ ...m }));
+        const validLabor = labor
+          .filter((l) => !isLaborEmpty(l))
+          .map(({ id, ...l }) => ({ ...l }));
+        const validOtherCosts = otherCosts
+          .filter((o) => !isOtherCostEmpty(o))
+          .map(({ id, ...o }) => ({ ...o }));
+
+        const selectedCat = categories.find((c) => c.id === newTemplateCategoryId);
+
         onSaveTemplate({
           name: newTemplateName.trim(),
-          category: newTemplateCategory,
+          categoryId: newTemplateCategoryId,
+          category: (selectedCat?.name || newTemplateCategoryId) as any,
           description: newTemplateDescription.trim(),
           isCustom: true,
           isPremiumOnly: false,
-          defaultMaterials: materials.map(({ id, ...m }) => ({ ...m })),
-          defaultLabor: labor.map(({ id, ...l }) => ({ ...l })),
-          defaultOtherCosts: otherCosts.map(({ id, ...o }) => ({ ...o })),
+          defaultMaterials: validMaterials,
+          defaultLabor: validLabor,
+          defaultOtherCosts: validOtherCosts,
           wastePercent,
           targetMarginPercent: targetProfitPercent,
           overheadType,
@@ -553,9 +696,9 @@ export function QuickCalculator({
   const handleResetClick = () => {
     // If the calculation is already clean/empty and not bound to a template, reset directly
     const isAlreadyEmpty =
-      materials.length === 0 &&
-      labor.length === 0 &&
-      otherCosts.length === 0 &&
+      materials.every(isMaterialEmpty) &&
+      labor.every(isLaborEmpty) &&
+      otherCosts.every(isOtherCostEmpty) &&
       !selectedTemplateId &&
       overheadValue === 0;
 
@@ -570,9 +713,9 @@ export function QuickCalculator({
   const handleConfirmReset = () => {
     clearDraftCalculation();
     clearDraftQuote();
-    setMaterials([]);
-    setLabor([]);
-    setOtherCosts([]);
+    setMaterials([createEmptyMaterialRow()]);
+    setLabor([createEmptyLaborRow()]);
+    setOtherCosts([createEmptyOtherCostRow()]);
     setWastePercent(profile.defaultWastePercent ?? 5);
     setOverheadValue(0);
     setOverheadType('percent');
@@ -585,7 +728,56 @@ export function QuickCalculator({
     showInfo('Calculateur réinitialisé pour une nouvelle session vierge.');
   };
 
+  const handleSaveTemplateFromCreationMode = () => {
+    if (!templateCreationContext) return;
+    if (onSaveTemplate) {
+      try {
+        const validMaterials = materials
+          .filter((m) => !isMaterialEmpty(m))
+          .map(({ id, ...m }) => ({ ...m }));
+        const validLabor = labor
+          .filter((l) => !isLaborEmpty(l))
+          .map(({ id, ...l }) => ({ ...l }));
+        const validOtherCosts = otherCosts
+          .filter((o) => !isOtherCostEmpty(o))
+          .map(({ id, ...o }) => ({ ...o }));
+
+        const legacyCat = (['metal', 'bois', 'alu', 'autre'].includes(templateCreationContext.categoryId)
+          ? templateCreationContext.categoryId
+          : 'autre') as any;
+
+        onSaveTemplate({
+          name: templateCreationContext.name.trim(),
+          categoryId: templateCreationContext.categoryId,
+          category: legacyCat,
+          description: templateCreationContext.description?.trim() || '',
+          isCustom: true,
+          isPremiumOnly: false,
+          defaultMaterials: validMaterials,
+          defaultLabor: validLabor,
+          defaultOtherCosts: validOtherCosts,
+          wastePercent,
+          targetMarginPercent: targetProfitPercent,
+          overheadType,
+          overheadValue,
+          pricingMode,
+          roundingStep,
+        });
+
+        showSuccess(`✓ Modèle « ${templateCreationContext.name.trim()} » enregistré avec succès dans votre bibliothèque !`);
+        onFinishTemplateCreation?.();
+      } catch (err) {
+        console.error('Failed to save template:', err);
+        showError('Impossible d\'enregistrer le modèle.');
+      }
+    }
+  };
+
   const handlePrimaryAction = () => {
+    if (templateCreationContext) {
+      handleSaveTemplateFromCreationMode();
+      return;
+    }
     if (editingQuote && onUpdateQuoteCalculation) {
       onUpdateQuoteCalculation(calculationInput, result, editingQuote);
     } else {
@@ -594,10 +786,61 @@ export function QuickCalculator({
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-32 md:pb-12 animate-in fade-in duration-200">
+    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-32 md:pb-12 animate-in fade-in duration-200 space-y-5">
+      {/* Context Banner: Template Creation Mode */}
+      {templateCreationContext && (
+        <div className="p-4 sm:p-5 bg-gradient-to-r from-teal-500/10 via-emerald-500/10 to-teal-500/10 border border-teal-300 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-teal-950 shadow-xs">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 bg-teal-600 text-white rounded-xl shadow-xs shrink-0 mt-0.5">
+              <BookmarkCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="px-2 py-0.5 text-[10px] font-extrabold bg-teal-200/80 text-teal-900 rounded-md uppercase tracking-wider">
+                  Nouveau modèle
+                </span>
+                <span className="text-xs font-bold text-teal-800">
+                  Catégorie : {categoryNameMap.get(templateCreationContext.categoryId) || 'Autre'}
+                </span>
+              </div>
+              <h2 className="text-base sm:text-lg font-extrabold text-slate-900 mt-1">
+                {templateCreationContext.name}
+              </h2>
+              {templateCreationContext.description && (
+                <p className="text-xs text-slate-600 mt-0.5 line-clamp-2 max-w-2xl">
+                  {templateCreationContext.description}
+                </p>
+              )}
+              <p className="text-[11px] text-teal-700 font-medium mt-1">
+                Ajustez les matières, temps et marges ci-dessous, puis validez pour enregistrer dans votre bibliothèque.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+            {onCancelTemplateCreation && (
+              <button
+                type="button"
+                onClick={onCancelTemplateCreation}
+                className="px-3.5 py-2 text-xs font-bold text-slate-600 hover:text-slate-900 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition-colors shadow-2xs cursor-pointer"
+              >
+                Annuler
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleSaveTemplateFromCreationMode}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-extrabold bg-teal-600 hover:bg-teal-700 text-white rounded-xl shadow-sm transition-colors cursor-pointer"
+            >
+              <BookmarkCheck className="w-4 h-4" />
+              <span>Enregistrer le modèle</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Context Banner if editing an existing quote's calculation */}
       {editingQuote && (
-        <div className="mb-5 p-4 bg-teal-50 border border-teal-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-teal-900 shadow-2xs">
+        <div className="p-4 bg-teal-50 border border-teal-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-teal-900 shadow-2xs">
           <div className="flex items-center gap-2.5">
             <div className="p-2 bg-teal-600 text-white rounded-lg">
               <Calculator className="w-5 h-5" />
@@ -614,7 +857,7 @@ export function QuickCalculator({
           {onCancelEditQuote && (
             <button
               onClick={onCancelEditQuote}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-teal-800 bg-white hover:bg-teal-100 rounded-lg border border-teal-300 transition-colors shadow-2xs"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-teal-800 bg-white hover:bg-teal-100 rounded-lg border border-teal-300 transition-colors shadow-2xs cursor-pointer"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>Annuler & Revenir au devis</span>
@@ -624,7 +867,7 @@ export function QuickCalculator({
       )}
 
       {/* Top Banner & Template Quick Loader */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
@@ -651,42 +894,36 @@ export function QuickCalculator({
             >
               <option value="">⚡ Charger un modèle d'ouvrage...</option>
               
-              {/* Free built-in templates */}
-              {templates.filter((t) => !t.isPremiumOnly && !t.isCustom).length > 0 && (
+              {/* Custom user templates (Priority 1) */}
+              {customTemplatesSorted.length > 0 && (
+                <optgroup label="── ✨ Mes Modèles Personnalisés ──">
+                  {customTemplatesSorted.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      ✨ {t.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+
+              {/* Premium templates (Priority 2, only if showSysTemplates is not false) */}
+              {showSysTemplates && premiumTemplatesSorted.length > 0 && (
+                <optgroup label="── 👑 Modèles Pro (Premium) ──">
+                  {premiumTemplatesSorted.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      👑 {t.name} (Pro)
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+
+              {/* Free built-in templates (Priority 3, only if showSysTemplates is not false) */}
+              {showSysTemplates && freeTemplatesSorted.length > 0 && (
                 <optgroup label="── Modèles Gratuits ──">
-                  {templates
-                    .filter((t) => !t.isPremiumOnly && !t.isCustom)
-                    .map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name}
-                      </option>
-                    ))}
-                </optgroup>
-              )}
-
-              {/* Premium templates */}
-              {templates.filter((t) => t.isPremiumOnly).length > 0 && (
-                <optgroup label="── Modèles Pro (Premium) ──">
-                  {templates
-                    .filter((t) => t.isPremiumOnly)
-                    .map((t) => (
-                      <option key={t.id} value={t.id}>
-                        👑 {t.name} (Pro)
-                      </option>
-                    ))}
-                </optgroup>
-              )}
-
-              {/* Custom user templates */}
-              {templates.filter((t) => t.isCustom).length > 0 && (
-                <optgroup label="── Mes Modèles Personnalisés ──">
-                  {templates
-                    .filter((t) => t.isCustom)
-                    .map((t) => (
-                      <option key={t.id} value={t.id}>
-                        ✨ {t.name}
-                      </option>
-                    ))}
+                  {freeTemplatesSorted.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
                 </optgroup>
               )}
             </select>
@@ -1464,20 +1701,29 @@ export function QuickCalculator({
               <button
                 onClick={handlePrimaryAction}
                 disabled={!result.isValid || result.roundedSellingPrice === 0}
-                className="w-full py-3.5 px-4 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 font-black rounded-xl text-sm transition-all shadow-md flex items-center justify-center gap-2 hover:scale-[1.01]"
+                className="w-full py-3.5 px-4 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 font-black rounded-xl text-sm transition-all shadow-md flex items-center justify-center gap-2 hover:scale-[1.01] cursor-pointer"
               >
-                <FileText className="w-4 h-4" />
-                <span>
-                  {editingQuote
-                    ? `Mettre à jour le Devis N° ${editingQuote.quoteNumber}`
-                    : 'Créer le Devis à partir de ce calcul'}
-                </span>
-                <ArrowRight className="w-4 h-4" />
+                {templateCreationContext ? (
+                  <>
+                    <BookmarkCheck className="w-4 h-4 text-slate-950" />
+                    <span>Enregistrer le modèle d'ouvrage</span>
+                  </>
+                ) : (
+                  <>
+                    <FileText className="w-4 h-4" />
+                    <span>
+                      {editingQuote
+                        ? `Mettre à jour le Devis N° ${editingQuote.quoteNumber}`
+                        : 'Créer le Devis à partir de ce calcul'}
+                    </span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
               </button>
 
               <button
                 onClick={() => setShowFormulaModal(true)}
-                className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors text-center"
+                className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors text-center cursor-pointer"
               >
                 🔍 Afficher le détail des formules mathématiques
               </button>
@@ -1489,7 +1735,9 @@ export function QuickCalculator({
       {/* Floating Sticky Mobile Summary Bar */}
       <div className="md:hidden fixed bottom-14 left-0 right-0 z-30 bg-slate-900 text-white p-3 border-t border-slate-800 shadow-2xl flex items-center justify-between gap-2">
         <div>
-          <div className="text-[10px] text-teal-400 font-bold uppercase">Prix Conseillé</div>
+          <div className="text-[10px] text-teal-400 font-bold uppercase">
+            {templateCreationContext ? 'Prix Conseillé du Modèle' : 'Prix Conseillé'}
+          </div>
           <div className="text-base font-black font-mono">
             {formatCurrency(result.roundedSellingPrice, currency)}
           </div>
@@ -1501,10 +1749,19 @@ export function QuickCalculator({
         <button
           onClick={handlePrimaryAction}
           disabled={!result.isValid || result.roundedSellingPrice === 0}
-          className="py-2 px-3.5 bg-teal-500 text-slate-950 font-extrabold rounded-lg text-xs flex items-center gap-1.5 shadow-sm"
+          className="py-2 px-3.5 bg-teal-500 text-slate-950 font-extrabold rounded-lg text-xs flex items-center gap-1.5 shadow-sm cursor-pointer"
         >
-          <FileText className="w-3.5 h-3.5" />
-          <span>{editingQuote ? 'Mettre à jour' : 'Faire Devis'}</span>
+          {templateCreationContext ? (
+            <>
+              <BookmarkCheck className="w-3.5 h-3.5" />
+              <span>Enregistrer modèle</span>
+            </>
+          ) : (
+            <>
+              <FileText className="w-3.5 h-3.5" />
+              <span>{editingQuote ? 'Mettre à jour' : 'Faire Devis'}</span>
+            </>
+          )}
         </button>
       </div>
 
@@ -1668,14 +1925,17 @@ export function QuickCalculator({
                 <label htmlFor="calc-save-tpl-category" className="font-bold text-slate-700 block">Catégorie d'ouvrage</label>
                 <select
                   id="calc-save-tpl-category"
-                  value={newTemplateCategory}
-                  onChange={(e) => setNewTemplateCategory(e.target.value as any)}
+                  value={newTemplateCategoryId}
+                  onChange={(e) => setNewTemplateCategoryId(e.target.value)}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-teal-500 font-medium bg-white"
                 >
-                  <option value="metal">Métallerie / Serrurerie / Fer forgé</option>
-                  <option value="bois">Menuiserie Bois</option>
-                  <option value="alu">Menuiserie Aluminium</option>
-                  <option value="autre">Autre structure / Spécialisé</option>
+                  {availableTemplateCategories
+                    .filter((cat) => cat.enabled !== false || cat.id === newTemplateCategoryId)
+                    .map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.name}
+                      </option>
+                    ))}
                 </select>
               </div>
 

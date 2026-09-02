@@ -22,6 +22,8 @@ import {
   Crown,
   Sparkles,
   Infinity as InfinityIcon,
+  ChevronDown,
+  Check,
 } from 'lucide-react';
 import { BusinessProfile, Quote, QuoteStatus, UserEntitlement } from '../types';
 import { formatCurrency, formatDateFrench, formatDateShort } from '../utils/formatters';
@@ -42,6 +44,7 @@ interface Props {
   onDuplicateQuote: (id: string) => void;
   onDeleteQuote: (id: string) => void;
   onNewQuote: () => void;
+  onUpdateQuoteStatus?: (id: string, newStatus: QuoteStatus) => void;
   entitlement?: UserEntitlement;
   onOpenPremiumModal?: () => void;
 }
@@ -53,6 +56,7 @@ export function QuoteHistory({
   onDuplicateQuote,
   onDeleteQuote,
   onNewQuote,
+  onUpdateQuoteStatus,
   entitlement,
   onOpenPremiumModal,
 }: Props) {
@@ -65,11 +69,70 @@ export function QuoteHistory({
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [previewingQuote, setPreviewingQuote] = useState<Quote | null>(null);
   const [sharingQuote, setSharingQuote] = useState<Quote | null>(null);
+  const [openStatusDropdownQuoteId, setOpenStatusDropdownQuoteId] = useState<string | null>(null);
 
   // Gating modals
   const [gateModalOpen, setGateModalOpen] = useState(false);
   const [gatedFeatureTitle, setGatedFeatureTitle] = useState('');
   const [gatedFeatureDesc, setGatedFeatureDesc] = useState('');
+
+  const STATUS_OPTIONS: Array<{
+    value: QuoteStatus;
+    label: string;
+    badgeBg: string;
+    badgeText: string;
+    badgeBorder: string;
+    icon: typeof CheckCircle2;
+  }> = [
+    {
+      value: 'Brouillon',
+      label: 'Brouillon',
+      badgeBg: 'bg-slate-100',
+      badgeText: 'text-slate-700',
+      badgeBorder: 'border-slate-300',
+      icon: FileText,
+    },
+    {
+      value: 'Envoyé',
+      label: 'Envoyé',
+      badgeBg: 'bg-blue-100',
+      badgeText: 'text-blue-800',
+      badgeBorder: 'border-blue-300',
+      icon: Clock,
+    },
+    {
+      value: 'Accepté',
+      label: 'Accepté',
+      badgeBg: 'bg-emerald-100',
+      badgeText: 'text-emerald-800',
+      badgeBorder: 'border-emerald-300',
+      icon: CheckCircle2,
+    },
+    {
+      value: 'Refusé',
+      label: 'Refusé',
+      badgeBg: 'bg-red-100',
+      badgeText: 'text-red-800',
+      badgeBorder: 'border-red-300',
+      icon: XCircle,
+    },
+    {
+      value: 'Terminé',
+      label: 'Terminé & Livré',
+      badgeBg: 'bg-teal-100',
+      badgeText: 'text-teal-800',
+      badgeBorder: 'border-teal-300',
+      icon: CheckCircle2,
+    },
+  ];
+
+  const handleStatusChange = (quoteId: string, newStatus: QuoteStatus, quoteNumber: string) => {
+    if (onUpdateQuoteStatus) {
+      onUpdateQuoteStatus(quoteId, newStatus);
+    }
+    setOpenStatusDropdownQuoteId(null);
+    showSuccess(`✓ Statut du devis ${quoteNumber} mis à jour : « ${newStatus} »`);
+  };
 
   const handlePrintQuote = async (quote: Quote) => {
     showInfo("Lancement de l'impression A4...");
@@ -381,7 +444,96 @@ export function QuoteHistory({
                   <span className="font-mono text-xs font-black text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
                     {quote.quoteNumber}
                   </span>
-                  {getStatusBadge(quote.status)}
+
+                  {/* Interactive Status Selector */}
+                  <div className="relative inline-block">
+                    {(() => {
+                      const currentOpt =
+                        STATUS_OPTIONS.find((opt) => opt.value === quote.status) || STATUS_OPTIONS[0];
+                      const StatusIcon = currentOpt.icon;
+                      const isOpen = openStatusDropdownQuoteId === quote.id;
+
+                      return (
+                        <>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenStatusDropdownQuoteId(isOpen ? null : quote.id);
+                            }}
+                            className={`inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-full border transition-all cursor-pointer shadow-2xs hover:ring-2 hover:ring-teal-400 hover:shadow-xs active:scale-95 focus:outline-hidden focus:ring-2 focus:ring-teal-500 min-h-[30px] ${currentOpt.badgeBg} ${currentOpt.badgeText} ${currentOpt.badgeBorder}`}
+                            title="Modifier le statut du devis (cliquer)"
+                            aria-haspopup="listbox"
+                            aria-expanded={isOpen}
+                          >
+                            <StatusIcon className="w-3 h-3 shrink-0" />
+                            <span>{currentOpt.label}</span>
+                            <ChevronDown className="w-3 h-3 opacity-60 ml-0.5 shrink-0" />
+                          </button>
+
+                          {isOpen && (
+                            <>
+                              <div
+                                className="fixed inset-0 z-40"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenStatusDropdownQuoteId(null);
+                                }}
+                              />
+                              <div
+                                className="absolute left-0 top-full mt-1.5 z-50 w-52 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 animate-in fade-in zoom-in-95 duration-150"
+                                role="listbox"
+                              >
+                                <div className="px-3 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100 mb-1">
+                                  Changer le statut
+                                </div>
+                                {STATUS_OPTIONS.map((opt) => {
+                                  const OptIcon = opt.icon;
+                                  const isSelected = quote.status === opt.value;
+                                  return (
+                                    <button
+                                      key={opt.value}
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleStatusChange(quote.id, opt.value, quote.quoteNumber);
+                                      }}
+                                      className={`w-full px-3 py-2 text-left text-xs font-semibold flex items-center justify-between gap-2 transition-colors ${
+                                        isSelected
+                                          ? 'bg-teal-50 text-teal-900 font-bold'
+                                          : 'text-slate-700 hover:bg-slate-100'
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <OptIcon
+                                          className={`w-3.5 h-3.5 ${
+                                            opt.value === 'Accepté'
+                                              ? 'text-emerald-600'
+                                              : opt.value === 'Terminé'
+                                              ? 'text-teal-600'
+                                              : opt.value === 'Envoyé'
+                                              ? 'text-blue-600'
+                                              : opt.value === 'Refusé'
+                                              ? 'text-red-600'
+                                              : 'text-slate-500'
+                                          }`}
+                                        />
+                                        <span>{opt.label}</span>
+                                      </div>
+                                      {isSelected && (
+                                        <Check className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
+
                   <span className="text-[11px] text-slate-400">
                     {formatDateFrench(quote.createdAt)}
                   </span>

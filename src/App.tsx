@@ -8,6 +8,7 @@ import { MaterialLibrary } from './components/MaterialLibrary';
 import { TemplateLibrary } from './components/TemplateLibrary';
 import { SettingsView } from './components/SettingsView';
 import { PremiumPresentationModal } from './components/licensing/PremiumPresentationModal';
+import { GuidedTourModal } from './components/GuidedTourModal';
 import { NotificationProvider } from './context/NotificationContext';
 import {
   AppTab,
@@ -15,11 +16,14 @@ import {
   CalculationInput,
   CalculationResult,
   LaborRateLibraryItem,
+  MaterialCategory,
   MaterialLibraryItem,
   Quote,
+  QuoteStatus,
   RecentCalculation,
   UserEntitlement,
   WorkshopTemplate,
+  TemplateCategory,
 } from './types';
 import {
   getProfile,
@@ -38,6 +42,16 @@ import {
   getTemplates,
   saveTemplate,
   deleteTemplate,
+  getTemplateCategories,
+  saveTemplateCategory,
+  renameTemplateCategory,
+  toggleTemplateCategoryEnabled,
+  deleteTemplateCategory,
+  getMaterialCategories,
+  saveMaterialCategory,
+  renameMaterialCategory,
+  toggleMaterialCategoryEnabled,
+  deleteMaterialCategory,
   getRecentCalculations,
   saveRecentCalculation,
   getEntitlement,
@@ -47,6 +61,8 @@ import {
   resetToFactoryDefaults,
   clearDraftCalculation,
   clearDraftQuote,
+  hasCompletedOnboarding,
+  setOnboardingCompleted,
 } from './storage/db';
 import { generateId } from './utils/formatters';
 
@@ -67,6 +83,12 @@ export default function App() {
   const [materials, setMaterials] = useState<MaterialLibraryItem[]>(() => getMaterials());
   const [laborRates, setLaborRates] = useState<LaborRateLibraryItem[]>(() => getLaborRates());
   const [templates, setTemplates] = useState<WorkshopTemplate[]>(() => getTemplates());
+  const [templateCategories, setTemplateCategories] = useState<TemplateCategory[]>(() =>
+    getTemplateCategories()
+  );
+  const [materialCategories, setMaterialCategories] = useState<MaterialCategory[]>(() =>
+    getMaterialCategories()
+  );
   const [recentCalculations, setRecentCalculations] = useState<RecentCalculation[]>(() =>
     getRecentCalculations()
   );
@@ -75,6 +97,9 @@ export default function App() {
   // Premium modal presentation state
   const [isPremiumModalOpen, setIsPremiumModalOpen] = useState(false);
 
+  // First-time onboarding guided tour state
+  const [isTourOpen, setIsTourOpen] = useState<boolean>(() => !hasCompletedOnboarding());
+
   // Workflow Handlers State
   const [editingQuote, setEditingQuote] = useState<Quote | null>(null);
   const [calculationForQuote, setCalculationForQuote] = useState<{
@@ -82,6 +107,11 @@ export default function App() {
     result: CalculationResult;
   } | null>(null);
   const [activeTemplate, setActiveTemplate] = useState<WorkshopTemplate | null>(null);
+  const [templateCreationContext, setTemplateCreationContext] = useState<{
+    name: string;
+    categoryId: string;
+    description?: string;
+  } | null>(null);
 
   // Reload all states from storage
   const refreshStorage = useCallback(() => {
@@ -90,9 +120,32 @@ export default function App() {
     setMaterials(getMaterials());
     setLaborRates(getLaborRates());
     setTemplates(getTemplates());
+    setTemplateCategories(getTemplateCategories());
+    setMaterialCategories(getMaterialCategories());
     setRecentCalculations(getRecentCalculations());
     setEntitlement(getEntitlement());
   }, []);
+
+  const handleCloseTour = () => {
+    setIsTourOpen(false);
+    setOnboardingCompleted(true);
+  };
+
+  const handleRestartTour = () => {
+    setIsTourOpen(true);
+  };
+
+  const handleUpdateQuoteStatus = (id: string, newStatus: QuoteStatus) => {
+    const existing = quotes.find((q) => q.id === id);
+    if (existing) {
+      saveQuote({
+        ...existing,
+        status: newStatus,
+        updatedAt: new Date().toISOString(),
+      });
+      refreshStorage();
+    }
+  };
 
   const handleUpdateEntitlement = (newEntitlement: UserEntitlement) => {
     saveEntitlement(newEntitlement);
@@ -104,6 +157,7 @@ export default function App() {
     setEditingQuote(null);
     setCalculationForQuote(null);
     setActiveTemplate(null);
+    setTemplateCreationContext(null);
     clearDraftQuote();
     clearDraftCalculation();
     setActiveTab('calculator');
@@ -155,6 +209,7 @@ export default function App() {
     input: CalculationInput,
     result: CalculationResult
   ) => {
+    clearDraftQuote();
     setEditingQuote(null);
     setCalculationForQuote({ input, result });
     setActiveTab('quote-builder');
@@ -166,8 +221,23 @@ export default function App() {
     result: CalculationResult,
     quote: Quote
   ) => {
+    // If the quote already contains a service line from calculation, update its unitPrice and total
+    const updatedLineItems = (quote.lineItems || []).map((item) => {
+      if (item.itemType === 'service') {
+        const qty = item.quantity || 1;
+        const newUnitPrice = result.roundedSellingPrice;
+        return {
+          ...item,
+          unitPrice: newUnitPrice,
+          total: Math.round(qty * newUnitPrice),
+        };
+      }
+      return item;
+    });
+
     const updated: Quote = {
       ...quote,
+      lineItems: updatedLineItems,
       calculationInput: input,
       calculationResult: result,
     };
@@ -192,12 +262,37 @@ export default function App() {
   const handleUseTemplateInCalculator = (template: WorkshopTemplate) => {
     setEditingQuote(null);
     setCalculationForQuote(null);
+    setTemplateCreationContext(null);
     clearDraftCalculation();
     setActiveTemplate({
       ...template,
       _sessionTimestamp: Date.now(),
     });
     setActiveTab('calculator');
+  };
+
+  // Quick Action: Start Creating New Template in Calculator
+  const handleStartCreateTemplate = (info: {
+    name: string;
+    categoryId: string;
+    description?: string;
+  }) => {
+    setEditingQuote(null);
+    setCalculationForQuote(null);
+    setActiveTemplate(null);
+    clearDraftQuote();
+    clearDraftCalculation();
+    setTemplateCreationContext(info);
+    setActiveTab('calculator');
+  };
+
+  const handleCancelTemplateCreation = () => {
+    setTemplateCreationContext(null);
+  };
+
+  const handleFinishTemplateCreation = () => {
+    setTemplateCreationContext(null);
+    setActiveTab('templates');
   };
 
   // Quick Action: Save Recent Calculation
@@ -242,6 +337,48 @@ export default function App() {
 
   const handleDeleteTemplate = (id: string) => {
     deleteTemplate(id);
+    refreshStorage();
+  };
+
+  // Handlers for Template Categories
+  const handleSaveTemplateCategory = (cat: { id?: string; name: string }) => {
+    saveTemplateCategory(cat);
+    refreshStorage();
+  };
+
+  const handleRenameTemplateCategory = (id: string, newName: string) => {
+    renameTemplateCategory(id, newName);
+    refreshStorage();
+  };
+
+  const handleToggleTemplateCategoryEnabled = (id: string, enabled?: boolean) => {
+    toggleTemplateCategoryEnabled(id, enabled);
+    refreshStorage();
+  };
+
+  const handleDeleteTemplateCategory = (id: string, reassignToCategoryId: string) => {
+    deleteTemplateCategory(id, reassignToCategoryId);
+    refreshStorage();
+  };
+
+  // Handlers for Material Categories
+  const handleSaveMaterialCategory = (cat: { id?: string; name: string }) => {
+    saveMaterialCategory(cat);
+    refreshStorage();
+  };
+
+  const handleRenameMaterialCategory = (id: string, newName: string) => {
+    renameMaterialCategory(id, newName);
+    refreshStorage();
+  };
+
+  const handleToggleMaterialCategoryEnabled = (id: string, enabled?: boolean) => {
+    toggleMaterialCategoryEnabled(id, enabled);
+    refreshStorage();
+  };
+
+  const handleDeleteMaterialCategory = (id: string, reassignToCategoryId: string) => {
+    deleteMaterialCategory(id, reassignToCategoryId);
     refreshStorage();
   };
 
@@ -326,8 +463,12 @@ export default function App() {
               materialLibrary={materials}
               laborLibrary={laborRates}
               templates={templates}
+              categories={templateCategories}
               initialCalculation={calculationForQuote?.input || editingQuote?.calculationInput}
               initialTemplate={activeTemplate}
+              templateCreationContext={templateCreationContext}
+              onCancelTemplateCreation={handleCancelTemplateCreation}
+              onFinishTemplateCreation={handleFinishTemplateCreation}
               onConsumeTemplate={() => setActiveTemplate(null)}
               editingQuote={editingQuote}
               onGenerateQuote={handleGenerateQuoteFromCalc}
@@ -338,6 +479,7 @@ export default function App() {
                 setEditingQuote(null);
                 setCalculationForQuote(null);
                 setActiveTemplate(null);
+                setTemplateCreationContext(null);
               }}
               onSaveTemplate={handleSaveTemplate}
               entitlement={entitlement}
@@ -353,6 +495,7 @@ export default function App() {
               onDuplicateQuote={handleDuplicateQuote}
               onDeleteQuote={handleDeleteQuote}
               onNewQuote={handleStartNewQuote}
+              onUpdateQuoteStatus={handleUpdateQuoteStatus}
               entitlement={entitlement}
               onOpenPremiumModal={() => setIsPremiumModalOpen(true)}
             />
@@ -376,22 +519,33 @@ export default function App() {
           {activeTab === 'materials' && (
             <MaterialLibrary
               materials={materials}
+              categories={materialCategories}
               laborRates={laborRates}
               profile={profile}
               onSaveMaterial={handleSaveMaterial}
               onDeleteMaterial={handleDeleteMaterial}
               onSaveLaborRate={handleSaveLaborRate}
               onDeleteLaborRate={handleDeleteLaborRate}
+              onSaveCategory={handleSaveMaterialCategory}
+              onRenameCategory={handleRenameMaterialCategory}
+              onToggleCategoryEnabled={handleToggleMaterialCategoryEnabled}
+              onDeleteCategory={handleDeleteMaterialCategory}
             />
           )}
 
           {activeTab === 'templates' && (
             <TemplateLibrary
               templates={templates}
+              categories={templateCategories}
               profile={profile}
               onUseTemplate={handleUseTemplateInCalculator}
+              onCreateTemplateInCalculator={handleStartCreateTemplate}
               onSaveTemplate={handleSaveTemplate}
               onDeleteTemplate={handleDeleteTemplate}
+              onSaveCategory={handleSaveTemplateCategory}
+              onRenameCategory={handleRenameTemplateCategory}
+              onToggleCategoryEnabled={handleToggleTemplateCategoryEnabled}
+              onDeleteCategory={handleDeleteTemplateCategory}
               entitlement={entitlement}
               onOpenPremiumModal={() => setIsPremiumModalOpen(true)}
             />
@@ -407,9 +561,18 @@ export default function App() {
               entitlement={entitlement}
               onUpdateEntitlement={handleUpdateEntitlement}
               onOpenPremiumModal={() => setIsPremiumModalOpen(true)}
+              onNavigate={(tab) => setActiveTab(tab)}
+              onRestartTour={handleRestartTour}
             />
           )}
         </main>
+
+        {/* First-time Onboarding & Interactive Guided Tour Modal */}
+        <GuidedTourModal
+          isOpen={isTourOpen}
+          onClose={handleCloseTour}
+          onNavigateTab={(tab) => setActiveTab(tab)}
+        />
 
         {/* Global Premium Presentation & License Activation Modal */}
         <PremiumPresentationModal
