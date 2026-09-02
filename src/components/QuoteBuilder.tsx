@@ -38,6 +38,7 @@ import {
   generateId,
 } from '../utils/formatters';
 import { QuotePreviewModal } from './QuotePreviewModal';
+import { NumericInput } from './NumericInput';
 import { downloadQuotePDF } from '../utils/pdfGenerator';
 import { shareOnWhatsApp } from '../utils/whatsappShare';
 import { getDraftQuote, saveDraftQuote, clearDraftQuote, clearDraftCalculation } from '../storage/db';
@@ -564,7 +565,7 @@ export function QuoteBuilder({
   };
 
   return (
-    <div className="max-w-6xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-32 md:pb-12 animate-in fade-in duration-200">
+    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-36 md:pb-24 lg:pb-12 animate-in fade-in duration-200">
       {/* Validation Error Banner */}
       {errorMessage && (
         <div className="mb-4 p-3.5 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between gap-3 text-red-900 text-xs shadow-2xs">
@@ -919,27 +920,45 @@ export function QuoteBuilder({
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-4 gap-2 items-center">
-                      <div>
+                    <div className="grid grid-cols-2 sm:grid-cols-12 gap-2.5 items-end">
+                      <div className="col-span-1 sm:col-span-3">
                         <label htmlFor={`quote-line-qty-${item.id}`} className="text-[10px] font-semibold text-slate-500 block mb-0.5">
-                          Qté
+                          Qté *
                         </label>
-                        <input
+                        <NumericInput
                           id={`quote-line-qty-${item.id}`}
-                          type="number"
-                          min="0"
-                          step="any"
-                          value={item.quantity === 0 ? '' : item.quantity}
-                          onChange={(e) => handleUpdateLineItem(item.id, 'quantity', e.target.value)}
-                          className={`w-full px-2 py-1 bg-white border rounded font-mono text-slate-900 transition-colors ${
+                          value={item.quantity}
+                          onChange={(val) => {
+                            handleUpdateLineItem(item.id, 'quantity', val);
+                            if (validationErrors[`quote-line-qty-${item.id}`]) {
+                              setValidationErrors((prev) => {
+                                const next = { ...prev };
+                                delete next[`quote-line-qty-${item.id}`];
+                                return next;
+                              });
+                            }
+                          }}
+                          onInvalidChange={(isInvalid, err) => {
+                            setValidationErrors((prev) => {
+                              const next = { ...prev };
+                              if (isInvalid) next[`quote-line-qty-${item.id}`] = err || 'Quantité invalide';
+                              else delete next[`quote-line-qty-${item.id}`];
+                              return next;
+                            });
+                          }}
+                          min={0.01}
+                          allowZero={false}
+                          placeholder="1"
+                          inputClassName={`py-1 text-xs ${
                             validationErrors[`quote-line-qty-${item.id}`]
-                              ? 'border-red-500 ring-1 ring-red-500 focus:border-red-500 focus:ring-red-500'
-                              : 'border-slate-300 focus:ring-1 focus:ring-teal-500'
+                              ? 'border-red-500 ring-1 ring-red-500'
+                              : ''
                           }`}
+                          ariaLabel={`Quantité ligne ${index + 1}`}
                         />
                       </div>
 
-                      <div>
+                      <div className="col-span-1 sm:col-span-3">
                         <label htmlFor={`quote-line-unit-${item.id}`} className="text-[10px] font-semibold text-slate-500 block mb-0.5">
                           Unité
                         </label>
@@ -949,34 +968,51 @@ export function QuoteBuilder({
                           value={item.unit}
                           onChange={(e) => handleUpdateLineItem(item.id, 'unit', e.target.value)}
                           placeholder="ensemble, m, pce..."
-                          className="w-full px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 focus:ring-1 focus:ring-teal-500"
+                          className="w-full px-2 py-1 bg-white border border-slate-300 rounded text-slate-900 focus:ring-1 focus:ring-teal-500 text-xs"
                         />
                       </div>
 
-                      <div>
+                      <div className="col-span-1 sm:col-span-3">
                         <label htmlFor={`quote-line-price-${item.id}`} className="text-[10px] font-semibold text-slate-500 block mb-0.5">
-                          Prix Unit. ({currency})
+                          Prix Unit. ({currency}) *
                         </label>
-                        <input
+                        <NumericInput
                           id={`quote-line-price-${item.id}`}
-                          type="number"
-                          min="0"
-                          step="100"
-                          value={item.unitPrice === 0 ? '' : item.unitPrice}
-                          onChange={(e) => handleUpdateLineItem(item.id, 'unitPrice', e.target.value)}
-                          className={`w-full px-2 py-1 bg-white border rounded font-mono text-slate-900 transition-colors ${
+                          value={item.unitPrice}
+                          onChange={(val) => {
+                            handleUpdateLineItem(item.id, 'unitPrice', val);
+                            if (validationErrors[`quote-line-price-${item.id}`]) {
+                              setValidationErrors((prev) => {
+                                const next = { ...prev };
+                                delete next[`quote-line-price-${item.id}`];
+                                return next;
+                              });
+                            }
+                          }}
+                          onInvalidChange={(isInvalid, err) => {
+                            setValidationErrors((prev) => {
+                              const next = { ...prev };
+                              if (isInvalid) next[`quote-line-price-${item.id}`] = err || 'Prix invalide';
+                              else delete next[`quote-line-price-${item.id}`];
+                              return next;
+                            });
+                          }}
+                          min={0}
+                          placeholder="0"
+                          inputClassName={`py-1 text-xs ${
                             validationErrors[`quote-line-price-${item.id}`]
-                              ? 'border-red-500 ring-1 ring-red-500 focus:border-red-500 focus:ring-red-500'
-                              : 'border-slate-300 focus:ring-1 focus:ring-teal-500'
+                              ? 'border-red-500 ring-1 ring-red-500'
+                              : ''
                           }`}
+                          ariaLabel={`Prix unitaire ligne ${index + 1}`}
                         />
                       </div>
 
-                      <div className="text-right">
+                      <div className="col-span-1 sm:col-span-3 text-right">
                         <label className="text-[10px] font-semibold text-slate-400 block mb-0.5">
                           Total ligne
                         </label>
-                        <div className="font-mono font-bold text-slate-900 text-xs py-1">
+                        <div className="font-mono font-bold text-slate-900 text-xs sm:text-sm py-1 flex items-center justify-end">
                           {formatCurrency(item.total, currency)}
                         </div>
                       </div>
@@ -1034,7 +1070,7 @@ export function QuoteBuilder({
         </div>
 
         {/* Sidebar Financials & Meta (4 cols) */}
-        <div className="lg:col-span-4 space-y-6">
+        <div className="lg:col-span-4 space-y-6 lg:sticky lg:top-[72px] lg:self-start">
           {/* Meta Card (Quote #, Dates, Status) */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-2xs p-4 space-y-3 text-xs">
             <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wider border-b border-slate-100 pb-2">
@@ -1109,18 +1145,18 @@ export function QuoteBuilder({
             {/* Discount Option */}
             <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-800">
               <label htmlFor="quote-discount-percent" className="text-slate-400">Remise commerciale :</label>
-              <div className="flex items-center gap-1 w-20">
-                <input
+              <div className="w-24">
+                <NumericInput
                   id="quote-discount-percent"
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={discountPercent === 0 ? '' : discountPercent}
-                  onChange={(e) => setDiscountPercent(sanitizeNumber(e.target.value))}
+                  value={discountPercent}
+                  onChange={(val) => setDiscountPercent(Math.min(100, Math.max(0, val)))}
+                  min={0}
+                  max={100}
+                  suffix="%"
                   placeholder="0"
-                  className="w-full px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded text-right font-mono text-xs text-white"
+                  inputClassName="py-0.5 text-xs bg-slate-800 border-slate-700 text-white"
+                  ariaLabel="Remise commerciale en pourcentage"
                 />
-                <span className="text-slate-400">%</span>
               </div>
             </div>
 
@@ -1151,19 +1187,23 @@ export function QuoteBuilder({
                     <option value="percent">%</option>
                     <option value="fixed">{currency}</option>
                   </select>
-                  <input
-                    id="quote-deposit-value"
-                    type="number"
-                    min="0"
-                    value={depositConfig.value}
-                    onChange={(e) =>
-                      setDepositConfig({
-                        ...depositConfig,
-                        value: sanitizeNumber(e.target.value),
-                      })
-                    }
-                    className="w-16 px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded text-right font-mono text-xs text-white"
-                  />
+                  <div className="w-20">
+                    <NumericInput
+                      id="quote-deposit-value"
+                      value={depositConfig.value}
+                      onChange={(val) =>
+                        setDepositConfig({
+                          ...depositConfig,
+                          value: Math.max(0, val),
+                        })
+                      }
+                      min={0}
+                      max={depositConfig.type === 'percent' ? 100 : undefined}
+                      placeholder="0"
+                      inputClassName="py-0.5 text-xs bg-slate-800 border-slate-700 text-white"
+                      ariaLabel="Valeur de l'acompte"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -1183,7 +1223,7 @@ export function QuoteBuilder({
             <div className="space-y-2 pt-2">
               <button
                 onClick={handleSave}
-                className="w-full py-3 px-4 bg-teal-500 hover:bg-teal-400 text-slate-950 font-black rounded-xl text-xs transition-all shadow-sm flex items-center justify-center gap-2"
+                className="w-full py-3 px-4 bg-teal-500 hover:bg-teal-400 text-slate-950 font-black rounded-xl text-xs transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Save className="w-4 h-4" />
                 <span>Enregistrer le Devis</span>
@@ -1191,13 +1231,46 @@ export function QuoteBuilder({
 
               <button
                 onClick={() => setShowPreviewModal(true)}
-                className="w-full py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-lg text-xs transition-colors border border-slate-700 flex items-center justify-center gap-2"
+                className="w-full py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-lg text-xs transition-colors border border-slate-700 flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Eye className="w-3.5 h-3.5" />
                 <span>Générer / Visualiser le PDF</span>
               </button>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Floating Sticky Mobile / Tablet Action Bar */}
+      <div className="lg:hidden fixed bottom-14 md:bottom-0 left-0 right-0 z-30 bg-slate-900/95 backdrop-blur-md text-white p-3 border-t border-slate-800 shadow-2xl flex items-center justify-between gap-2">
+        <div>
+          <div className="text-[10px] text-teal-400 font-bold uppercase">Total Net à Payer</div>
+          <div className="text-base font-black font-mono">
+            {formatCurrency(finalTotal, currency)}
+          </div>
+          {depositAmount > 0 && (
+            <div className="text-[10px] text-emerald-400">
+              Acompte : {formatCurrency(depositAmount, currency)}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowPreviewModal(true)}
+            className="py-2 px-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-lg text-xs border border-slate-700 flex items-center gap-1 cursor-pointer"
+            title="Visualiser le PDF"
+          >
+            <Eye className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Aperçu</span>
+          </button>
+          <button
+            onClick={handleSave}
+            className="py-2 px-3.5 bg-teal-500 hover:bg-teal-400 text-slate-950 font-extrabold rounded-lg text-xs flex items-center gap-1.5 shadow-sm cursor-pointer"
+          >
+            <Save className="w-3.5 h-3.5" />
+            <span>Enregistrer</span>
+          </button>
         </div>
       </div>
 

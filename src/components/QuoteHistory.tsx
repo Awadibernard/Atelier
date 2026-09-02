@@ -254,7 +254,7 @@ export function QuoteHistory({
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-32 md:pb-12 space-y-6 animate-in fade-in duration-200">
+    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-36 md:pb-24 lg:pb-12 space-y-6 animate-in fade-in duration-200">
       {/* Header & Stats Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -413,7 +413,7 @@ export function QuoteHistory({
 
       {/* Quotes List */}
       {filteredQuotes.length === 0 ? (
-        <div className="text-center py-12 bg-white rounded-xl border border-slate-200 p-6 space-y-3">
+        <div id="tour-quotes-list" className="text-center py-12 bg-white rounded-xl border border-slate-200 p-6 space-y-3">
           <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 mx-auto flex items-center justify-center">
             <FileText className="w-6 h-6" />
           </div>
@@ -432,7 +432,7 @@ export function QuoteHistory({
           </button>
         </div>
       ) : (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-2xs divide-y divide-slate-100 overflow-hidden">
+        <div id="tour-quotes-list" className="bg-white rounded-xl border border-slate-200 shadow-2xs divide-y divide-slate-100 overflow-hidden">
           {filteredQuotes.map((quote) => (
             <div
               key={quote.id}

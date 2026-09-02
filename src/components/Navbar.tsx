@@ -92,7 +92,7 @@ export function Navbar({
           </button>
 
           {/* Desktop Nav Items */}
-          <nav className="hidden md:flex items-center gap-1">
+          <nav className="hidden md:flex items-center gap-0.5 lg:gap-1">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = activeTab === item.id || (item.id === 'quotes' && activeTab === 'quote-builder');
@@ -100,17 +100,31 @@ export function Navbar({
                 <button
                   key={item.id}
                   onClick={() => onSelectTab(item.id)}
-                  className={`relative flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  className={`relative flex items-center gap-1.5 px-2 lg:px-3 py-1.5 rounded-lg text-[11px] lg:text-xs font-semibold transition-all whitespace-nowrap ${
                     isActive
                       ? 'bg-teal-700/80 text-white shadow-xs'
                       : 'text-slate-300 hover:text-white hover:bg-slate-800'
                   }`}
                 >
-                  <Icon className="w-4 h-4" />
-                  <span>{item.label}</span>
+                  <Icon className="w-3.5 h-3.5 lg:w-4 lg:h-4 shrink-0" />
+                  <span>
+                    {item.id === 'quotes' ? (
+                      <>
+                        <span>Devis</span>
+                        <span className="hidden xl:inline"> & Historique</span>
+                      </>
+                    ) : item.id === 'calculator' ? (
+                      <>
+                        <span>Calcul</span>
+                        <span className="hidden xl:inline">ateur</span>
+                      </>
+                    ) : (
+                      item.label
+                    )}
+                  </span>
                   {item.badge !== undefined && item.badge > 0 && (
                     <span
-                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                      className={`text-[9px] lg:text-[10px] px-1 lg:px-1.5 py-0.2 rounded-full font-bold ${
                         isActive
                           ? 'bg-white text-teal-900'
                           : 'bg-slate-700 text-slate-200'
@@ -125,12 +139,12 @@ export function Navbar({
           </nav>
 
           {/* Right Status / Quick Actions */}
-          <div className="flex items-center gap-2 sm:gap-3 text-xs">
+          <div className="flex items-center gap-1.5 sm:gap-2 text-xs shrink-0">
             {/* Plan Badge Button */}
             {onOpenPremiumModal && (
               <button
                 onClick={onOpenPremiumModal}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${
+                className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1 rounded-full text-[10px] sm:text-[11px] font-bold transition-all ${
                   userIsPremium
                     ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
                     : 'bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 hover:text-white'
@@ -153,7 +167,7 @@ export function Navbar({
             )}
 
             <div
-              className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium ${
+              className={`hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium ${
                 isOnline
                   ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-800/60'
                   : 'bg-amber-950/80 text-amber-300 border border-amber-800/60'
@@ -170,7 +184,7 @@ export function Navbar({
 
             <button
               onClick={() => onSelectTab('calculator')}
-              className="px-3 py-1.5 bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold rounded-lg text-xs transition-colors shadow-xs flex items-center gap-1.5"
+              className="hidden xl:flex px-3 py-1.5 bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold rounded-lg text-xs transition-colors shadow-xs items-center gap-1.5"
             >
               <Calculator className="w-3.5 h-3.5" />
               <span>Calcul Rapide</span>
@@ -180,7 +194,7 @@ export function Navbar({
       </header>
 
       {/* Mobile Bottom Navigation Bar (Phone-first UX) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 px-2 py-1.5 flex justify-around items-center text-slate-400">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 px-1 py-1 flex justify-around items-center text-slate-400">
         {[
           { id: 'home' as AppTab, label: 'Accueil', icon: Home },
           { id: 'calculator' as AppTab, label: 'Calcul', icon: Calculator },
@@ -195,7 +209,7 @@ export function Navbar({
             <button
               key={item.id}
               onClick={() => onSelectTab(item.id)}
-              className={`relative flex flex-col items-center justify-center w-14 py-1 rounded-lg transition-colors ${
+              className={`relative flex-1 min-w-0 flex flex-col items-center justify-center py-1 rounded-lg transition-colors ${
                 isActive ? 'text-teal-400 font-bold' : 'text-slate-400 hover:text-slate-200'
               }`}
             >
@@ -207,7 +221,9 @@ export function Navbar({
                   </span>
                 )}
               </div>
-              <span className="text-[10px] mt-0.5 tracking-tight">{item.label}</span>
+              <span className="text-[10px] mt-0.5 tracking-tight truncate max-w-[54px] text-center">
+                {item.label}
+              </span>
             </button>
           );
         })}

@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Minus } from 'lucide-react';
+import { validateNumericString } from './NumericInput';
 
 interface NumberStepperProps {
   id?: string;
   value: number;
   onChange: (value: number) => void;
+  onInvalidChange?: (isInvalid: boolean) => void;
   min?: number;
   max?: number;
   step?: number;
@@ -20,6 +22,7 @@ export function NumberStepper({
   id,
   value,
   onChange,
+  onInvalidChange,
   min = 0,
   max,
   step = 1,
@@ -33,48 +36,65 @@ export function NumberStepper({
   // Local string representation to allow typing intermediate states (e.g. "0.", empty, etc.)
   const [localStr, setLocalStr] = useState<string>(() => (value === 0 && placeholder !== '0' ? '' : String(value)));
   const [isFocused, setIsFocused] = useState(false);
+  const [isInvalid, setIsInvalid] = useState(false);
 
   // Sync from prop when value changes externally and input is not being actively typed into
   useEffect(() => {
-    if (!isFocused) {
+    if (!isFocused && !isInvalid) {
       setLocalStr(value === 0 && placeholder !== '0' ? '' : String(value));
     }
-  }, [value, isFocused, placeholder]);
+  }, [value, isFocused, placeholder, isInvalid]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const raw = e.target.value.replace(',', '.');
-    setLocalStr(raw);
+    const raw = e.target.value;
 
-    if (raw === '') {
-      onChange(min);
+    // "0 + new digit" fix: if localStr is "0" and user types '1' -> raw is "01" -> turn into "1"
+    let nextStr = raw;
+    if (localStr === '0' && /^0[1-9]$/.test(raw)) {
+      nextStr = raw.substring(1);
+    }
+
+    setLocalStr(nextStr);
+
+    if (nextStr.trim() === '') {
+      // Intermediate state while typing: keep valid state pending or reset to min on blur
+      setIsInvalid(false);
+      onInvalidChange?.(false);
       return;
     }
 
-    const parsed = parseFloat(raw);
-    if (!isNaN(parsed)) {
-      let constrained = parsed;
-      if (min !== undefined && constrained < min) {
-        constrained = min;
-      }
-      if (max !== undefined && constrained > max) {
-        constrained = max;
-      }
-      onChange(constrained);
+    const validation = validateNumericString(nextStr, min, max, true);
+    if (validation.isValid && validation.parsedValue !== undefined) {
+      setIsInvalid(false);
+      onInvalidChange?.(false);
+      onChange(validation.parsedValue);
+    } else {
+      setIsInvalid(true);
+      onInvalidChange?.(true);
+      // DO NOT call onChange(0)! Never silently convert invalid text to 0!
     }
   };
 
   const handleBlur = () => {
     setIsFocused(false);
-    if (localStr === '' || isNaN(parseFloat(localStr))) {
+    if (localStr.trim() === '') {
+      setIsInvalid(false);
+      onInvalidChange?.(false);
       onChange(min);
       setLocalStr(min === 0 && placeholder !== '0' ? '' : String(min));
+      return;
+    }
+
+    const validation = validateNumericString(localStr, min, max, true);
+    if (validation.isValid && validation.parsedValue !== undefined) {
+      setIsInvalid(false);
+      onInvalidChange?.(false);
+      onChange(validation.parsedValue);
+      setLocalStr(String(validation.parsedValue));
     } else {
-      const parsed = parseFloat(localStr);
-      let constrained = parsed;
-      if (min !== undefined && constrained < min) constrained = min;
-      if (max !== undefined && constrained > max) constrained = max;
-      onChange(constrained);
-      setLocalStr(constrained === 0 && placeholder !== '0' ? '' : String(constrained));
+      // Keep invalid state active and visible
+      setIsInvalid(true);
+      onInvalidChange?.(true);
     }
   };
 
@@ -86,6 +106,8 @@ export function NumberStepper({
     e.preventDefault();
     e.stopPropagation();
     if (disabled) return;
+    setIsInvalid(false);
+    onInvalidChange?.(false);
     const current = typeof value === 'number' && !isNaN(value) ? value : min;
     const next = roundPrecision(current - step);
     const constrained = min !== undefined ? Math.max(min, next) : next;
@@ -97,6 +119,8 @@ export function NumberStepper({
     e.preventDefault();
     e.stopPropagation();
     if (disabled) return;
+    setIsInvalid(false);
+    onInvalidChange?.(false);
     const current = typeof value === 'number' && !isNaN(value) ? value : min;
     const next = roundPrecision(current + step);
     const constrained = max !== undefined ? Math.min(max, next) : next;
@@ -109,9 +133,11 @@ export function NumberStepper({
 
   return (
     <div
-      className={`inline-flex items-center bg-white border border-slate-300 rounded-lg shadow-2xs focus-within:ring-2 focus-within:ring-teal-500 focus-within:border-teal-500 transition-all ${
-        disabled ? 'opacity-60 bg-slate-50' : ''
-      } ${className}`}
+      className={`inline-flex items-center bg-white border rounded-lg shadow-2xs transition-all ${
+        isInvalid
+          ? 'border-red-500 ring-1 ring-red-500 bg-red-50/20'
+          : 'border-slate-300 focus-within:ring-2 focus-within:ring-teal-500 focus-within:border-teal-500'
+      } ${disabled ? 'opacity-60 bg-slate-50' : ''} ${className}`}
     >
       <button
         type="button"
@@ -135,6 +161,7 @@ export function NumberStepper({
           onBlur={handleBlur}
           placeholder={placeholder}
           aria-label={ariaLabel}
+          aria-invalid={isInvalid}
           disabled={disabled}
           className={`w-full min-w-[48px] px-1 py-1 text-center font-mono font-bold text-slate-900 text-xs bg-transparent border-0 focus:outline-hidden ${inputClassName}`}
         />

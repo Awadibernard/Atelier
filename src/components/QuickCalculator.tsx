@@ -46,6 +46,7 @@ import { isPremium } from '../licensing/features';
 import { PremiumGateModal } from './licensing/PremiumGateModal';
 import { CalculationBreakdownModal } from './CalculationBreakdownModal';
 import { NumberStepper } from './NumberStepper';
+import { NumericInput } from './NumericInput';
 import { getDraftCalculation, saveDraftCalculation, clearDraftCalculation, clearDraftQuote, isSystemMaterial } from '../storage/db';
 import { useNotification } from '../context/NotificationContext';
 import { focusAndScrollToField } from '../utils/formValidation';
@@ -303,6 +304,24 @@ export function QuickCalculator({
   // Premium gate modal state
   const [gateModalOpen, setGateModalOpen] = useState(false);
   const [selectedPremiumTemplate, setSelectedPremiumTemplate] = useState<WorkshopTemplate | null>(null);
+
+  // Track invalid numeric input states across rows to prevent silent invalid submissions
+  const [invalidNumericFields, setInvalidNumericFields] = useState<Record<string, boolean>>({});
+
+  const handleSetFieldInvalid = (key: string, isInvalid: boolean) => {
+    setInvalidNumericFields((prev) => {
+      if (!isInvalid && !prev[key]) return prev;
+      const next = { ...prev };
+      if (isInvalid) {
+        next[key] = true;
+      } else {
+        delete next[key];
+      }
+      return next;
+    });
+  };
+
+  const hasInvalidNumericFields = Object.keys(invalidNumericFields).length > 0;
 
   // Track the timestamp of the last loaded template to prevent re-applying old props on navigation
   const lastLoadedTimestampRef = useRef<number | null>(null);
@@ -774,6 +793,10 @@ export function QuickCalculator({
   };
 
   const handlePrimaryAction = () => {
+    if (hasInvalidNumericFields) {
+      showError('Veuillez corriger les valeurs numériques en rouge avant de continuer.');
+      return;
+    }
     if (templateCreationContext) {
       handleSaveTemplateFromCreationMode();
       return;
@@ -786,7 +809,7 @@ export function QuickCalculator({
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-32 md:pb-12 animate-in fade-in duration-200 space-y-5">
+    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-36 md:pb-24 lg:pb-12 animate-in fade-in duration-200 space-y-5">
       {/* Context Banner: Template Creation Mode */}
       {templateCreationContext && (
         <div className="p-4 sm:p-5 bg-gradient-to-r from-teal-500/10 via-emerald-500/10 to-teal-500/10 border border-teal-300 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-teal-950 shadow-xs">
@@ -1040,7 +1063,7 @@ export function QuickCalculator({
           )}
 
           {/* SECTION A: MATÉRIAUX */}
-          <div className="bg-white rounded-xl border border-slate-200 shadow-2xs p-4 sm:p-5 space-y-4">
+          <div id="tour-calculator-materials" className="bg-white rounded-xl border border-slate-200 shadow-2xs p-4 sm:p-5 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h2 className="font-bold text-sm sm:text-base text-slate-900 flex items-center gap-2">
@@ -1103,6 +1126,7 @@ export function QuickCalculator({
                           <NumberStepper
                             value={mat.quantity}
                             onChange={(val) => handleUpdateMaterial(mat.id, 'quantity', val)}
+                            onInvalidChange={(isInv) => handleSetFieldInvalid(`mat-${mat.id}-qty`, isInv)}
                             min={0}
                             step={1}
                             placeholder="1"
@@ -1134,14 +1158,14 @@ export function QuickCalculator({
                           <label className="text-[10px] font-semibold text-slate-500 block mb-1">
                             Prix Unit. ({currency})
                           </label>
-                          <input
-                            type="number"
-                            min="0"
-                            step="any"
-                            value={mat.unitPrice === 0 ? '' : mat.unitPrice}
-                            onChange={(e) => handleUpdateMaterial(mat.id, 'unitPrice', e.target.value)}
+                          <NumericInput
+                            value={mat.unitPrice}
+                            onChange={(val) => handleUpdateMaterial(mat.id, 'unitPrice', val)}
+                            onInvalidChange={(isInv) => handleSetFieldInvalid(`mat-${mat.id}-price`, isInv)}
+                            min={0}
                             placeholder="0"
-                            className="w-full h-8 sm:h-7 px-2 py-1 bg-white border border-slate-300 rounded-lg font-mono font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-teal-500 text-xs text-right"
+                            inputClassName="h-8 sm:h-7 text-xs"
+                            ariaLabel="Prix unitaire du matériau"
                           />
                         </div>
 
@@ -1306,6 +1330,7 @@ export function QuickCalculator({
                           <NumberStepper
                             value={l.hours}
                             onChange={(val) => handleUpdateLabor(l.id, 'hours', val)}
+                            onInvalidChange={(isInv) => handleSetFieldInvalid(`labor-${l.id}-hours`, isInv)}
                             min={0}
                             step={0.5}
                             unit="h"
@@ -1320,14 +1345,14 @@ export function QuickCalculator({
                           <label className="text-[10px] font-semibold text-slate-500 block mb-1">
                             Taux Horaire ({currency}/h)
                           </label>
-                          <input
-                            type="number"
-                            min="0"
-                            step="any"
-                            value={l.hourlyRate === 0 ? '' : l.hourlyRate}
-                            onChange={(e) => handleUpdateLabor(l.id, 'hourlyRate', e.target.value)}
+                          <NumericInput
+                            value={l.hourlyRate}
+                            onChange={(val) => handleUpdateLabor(l.id, 'hourlyRate', val)}
+                            onInvalidChange={(isInv) => handleSetFieldInvalid(`labor-${l.id}-rate`, isInv)}
+                            min={0}
                             placeholder="0"
-                            className="w-full h-8 sm:h-7 px-2 py-1 bg-white border border-slate-300 rounded-lg font-mono font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-teal-500 text-xs text-right"
+                            inputClassName="h-8 sm:h-7 text-xs"
+                            ariaLabel="Taux horaire"
                           />
                         </div>
 
@@ -1419,16 +1444,17 @@ export function QuickCalculator({
                     className="flex-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-medium text-slate-900 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
                   />
                   <div className="flex items-center gap-2">
-                    <div className="flex-1 sm:w-36 flex items-center gap-1 bg-white border border-slate-300 rounded-lg px-2 py-0.5 focus-within:ring-2 focus-within:ring-teal-500">
-                      <input
-                        type="number"
-                        min="0"
-                        value={item.amount === 0 ? '' : item.amount}
-                        onChange={(e) => handleUpdateOtherCost(item.id, 'amount', e.target.value)}
+                    <div className="flex-1 sm:w-40 flex items-center">
+                      <NumericInput
+                        value={item.amount}
+                        onChange={(val) => handleUpdateOtherCost(item.id, 'amount', val)}
+                        onInvalidChange={(isInv) => handleSetFieldInvalid(`other-${item.id}-amount`, isInv)}
+                        min={0}
                         placeholder="0"
-                        className="w-full py-1 bg-transparent border-0 font-mono font-bold text-right text-xs text-slate-900 focus:outline-hidden"
+                        suffix={currency}
+                        inputClassName="py-1 text-xs"
+                        ariaLabel="Montant du coût additionnel"
                       />
-                      <span className="text-[11px] font-bold text-slate-400 select-none">{currency}</span>
                     </div>
                     <button
                       onClick={() => handleRemoveOtherCost(item.id)}
@@ -1473,6 +1499,7 @@ export function QuickCalculator({
                   <NumberStepper
                     value={overheadValue}
                     onChange={(val) => setOverheadValue(Math.max(0, val))}
+                    onInvalidChange={(isInv) => handleSetFieldInvalid('calc-overhead-val', isInv)}
                     min={0}
                     max={100}
                     step={1}
@@ -1482,16 +1509,17 @@ export function QuickCalculator({
                     ariaLabel="Pourcentage de frais généraux"
                   />
                 ) : (
-                  <div className="flex items-center gap-1 bg-white border border-slate-300 rounded-lg px-2 py-0.5 w-32 focus-within:ring-2 focus-within:ring-teal-500">
-                    <input
-                      type="number"
-                      min="0"
-                      value={overheadValue === 0 ? '' : overheadValue}
-                      onChange={(e) => setOverheadValue(Math.max(0, sanitizeNumber(e.target.value)))}
+                  <div className="w-36 flex items-center">
+                    <NumericInput
+                      value={overheadValue}
+                      onChange={(val) => setOverheadValue(Math.max(0, val))}
+                      onInvalidChange={(isInv) => handleSetFieldInvalid('calc-overhead-val', isInv)}
+                      min={0}
                       placeholder="0"
-                      className="w-full py-1 bg-transparent border-0 font-mono font-bold text-right text-xs text-slate-900 focus:outline-hidden"
+                      suffix={currency}
+                      inputClassName="py-1 text-xs"
+                      ariaLabel="Frais généraux fixes"
                     />
-                    <span className="text-[11px] font-bold text-slate-400">{currency}</span>
                   </div>
                 )}
               </div>
@@ -1500,7 +1528,7 @@ export function QuickCalculator({
         </div>
 
         {/* ================= RIGHT COLUMN: LIVE PRICING & MARGIN CARD ================= */}
-        <div className="lg:col-span-5 space-y-6 lg:sticky lg:top-18">
+        <div id="tour-calculator-summary" className="lg:col-span-5 space-y-6 lg:sticky lg:top-[72px] lg:self-start">
           {/* Target Margin / Markup Control Card */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-5">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
@@ -1698,10 +1726,21 @@ export function QuickCalculator({
 
             {/* Action Buttons */}
             <div className="space-y-2 pt-2">
+              {hasInvalidNumericFields && (
+                <div className="p-2.5 bg-red-950/60 border border-red-800/80 rounded-lg text-red-300 text-xs flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                  <span>Corrigez les valeurs numériques en rouge</span>
+                </div>
+              )}
+
               <button
                 onClick={handlePrimaryAction}
-                disabled={!result.isValid || result.roundedSellingPrice === 0}
-                className="w-full py-3.5 px-4 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 font-black rounded-xl text-sm transition-all shadow-md flex items-center justify-center gap-2 hover:scale-[1.01] cursor-pointer"
+                disabled={!result.isValid || result.roundedSellingPrice === 0 || hasInvalidNumericFields}
+                className={`w-full py-3.5 px-4 font-black rounded-xl text-sm transition-all shadow-md flex items-center justify-center gap-2 ${
+                  !result.isValid || result.roundedSellingPrice === 0 || hasInvalidNumericFields
+                    ? 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-60'
+                    : 'bg-teal-500 hover:bg-teal-400 text-slate-950 hover:scale-[1.01] cursor-pointer'
+                }`}
               >
                 {templateCreationContext ? (
                   <>
@@ -1732,8 +1771,8 @@ export function QuickCalculator({
         </div>
       </div>
 
-      {/* Floating Sticky Mobile Summary Bar */}
-      <div className="md:hidden fixed bottom-14 left-0 right-0 z-30 bg-slate-900 text-white p-3 border-t border-slate-800 shadow-2xl flex items-center justify-between gap-2">
+      {/* Floating Sticky Mobile / Tablet Summary Bar */}
+      <div className="lg:hidden fixed bottom-14 md:bottom-0 left-0 right-0 z-30 bg-slate-900/95 backdrop-blur-md text-white p-3 border-t border-slate-800 shadow-2xl flex items-center justify-between gap-2">
         <div>
           <div className="text-[10px] text-teal-400 font-bold uppercase">
             {templateCreationContext ? 'Prix Conseillé du Modèle' : 'Prix Conseillé'}
@@ -1748,8 +1787,12 @@ export function QuickCalculator({
 
         <button
           onClick={handlePrimaryAction}
-          disabled={!result.isValid || result.roundedSellingPrice === 0}
-          className="py-2 px-3.5 bg-teal-500 text-slate-950 font-extrabold rounded-lg text-xs flex items-center gap-1.5 shadow-sm cursor-pointer"
+          disabled={!result.isValid || result.roundedSellingPrice === 0 || hasInvalidNumericFields}
+          className={`py-2 px-3.5 font-extrabold rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition-all ${
+            !result.isValid || result.roundedSellingPrice === 0 || hasInvalidNumericFields
+              ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
+              : 'bg-teal-500 hover:bg-teal-400 text-slate-950 cursor-pointer'
+          }`}
         >
           {templateCreationContext ? (
             <>
