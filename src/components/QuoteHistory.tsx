@@ -619,7 +619,7 @@ export function QuoteHistory({
               </div>
 
               {/* Right Totals & Quick Actions */}
-              <div className="flex sm:flex-col items-center sm:items-end justify-between gap-3 shrink-0">
+              <div className="flex flex-wrap sm:flex-col items-center sm:items-end justify-between gap-2.5 sm:gap-3 w-full sm:w-auto pt-2.5 sm:pt-0 border-t border-slate-100 sm:border-0 shrink-0">
                 <div className="text-left sm:text-right">
                   <div className="text-base sm:text-lg font-black font-mono text-slate-900">
                     {formatCurrency(quote.finalTotal, currency)}
@@ -632,7 +632,7 @@ export function QuoteHistory({
                 </div>
 
                 {/* Buttons */}
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 flex-wrap justify-end">
                   <button
                     onClick={() => setPreviewingQuote(quote)}
                     className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-200 rounded-lg transition-colors"

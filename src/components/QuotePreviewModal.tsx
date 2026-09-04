@@ -178,7 +178,7 @@ export function QuotePreviewModal({
         <div className="flex-1 p-3 sm:p-8 overflow-y-auto bg-slate-100 flex justify-center">
           <div
             ref={quoteSheetRef}
-            className="w-full max-w-[210mm] min-h-[297mm] bg-white rounded-lg shadow-md border border-slate-200 p-6 sm:p-10 flex flex-col justify-between text-slate-800 font-sans print-document-sheet"
+            className="w-full max-w-[210mm] min-h-[297mm] bg-white rounded-lg shadow-md border border-slate-200 p-4 sm:p-10 flex flex-col justify-between text-slate-800 font-sans print-document-sheet"
           >
             <div>
               {/* Header */}
@@ -280,7 +280,7 @@ export function QuotePreviewModal({
 
               {/* Line Items Table */}
               <div className="py-2 overflow-x-auto">
-                <table className="w-full text-xs text-left border-collapse">
+                <table className="w-full min-w-[480px] text-xs text-left border-collapse">
                   <thead>
                     <tr className="bg-slate-800 text-white font-semibold">
                       <th className="py-2.5 px-3 rounded-l-md">Désignation / Prestation</th>

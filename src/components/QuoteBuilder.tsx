@@ -1088,7 +1088,7 @@ export function QuoteBuilder({
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 gap-2">
               <div>
                 <label htmlFor="quote-date-created" className="font-semibold text-slate-600 block mb-1">Date d'émission</label>
                 <input

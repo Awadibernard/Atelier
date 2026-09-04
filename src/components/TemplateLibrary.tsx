@@ -597,7 +597,7 @@ export function TemplateLibrary({
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {filteredTemplates.map((tpl) => {
             // Pre-calculate sample price for this template
             const calcInput: CalculationInput = {
@@ -699,7 +699,7 @@ export function TemplateLibrary({
                 </div>
 
                 {/* Actions Footer */}
-                <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2 flex-wrap sm:flex-nowrap">
                   <div className="flex items-center gap-1">
                     {tpl.isCustom && (
                       <button
@@ -736,7 +736,7 @@ export function TemplateLibrary({
                   <button
                     type="button"
                     onClick={() => handleAttemptUseTemplate(tpl)}
-                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-colors shadow-2xs cursor-pointer ${
+                    className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold transition-colors shadow-2xs cursor-pointer ${
                       isGated
                         ? 'bg-amber-600 hover:bg-amber-700 text-white'
                         : 'bg-teal-600 hover:bg-teal-700 text-white'
@@ -750,7 +750,7 @@ export function TemplateLibrary({
                     ) : (
                       <>
                         <Play className="w-3.5 h-3.5 fill-current" />
-                        <span>Utiliser dans le Calculateur</span>
+                        <span><span className="inline sm:hidden">Utiliser</span><span className="hidden sm:inline">Utiliser dans le Calculateur</span></span>
                       </>
                     )}
                   </button>
