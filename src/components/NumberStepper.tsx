@@ -48,16 +48,42 @@ export function NumberStepper({
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const raw = e.target.value;
 
-    // "0 + new digit" fix: if localStr is "0" and user types '1' -> raw is "01" -> turn into "1"
+    // Handle "0 + new digit" UX fix:
+    // If current field is just "0" and user starts entering a new number,
+    // replace the existing 0 with the first digit typed regardless of cursor position.
     let nextStr = raw;
-    if (localStr === '0' && /^0[1-9]$/.test(raw)) {
-      nextStr = raw.substring(1);
+    if (localStr === '0') {
+      if (/^[1-9]0$/.test(raw)) {
+        // User clicked before 0 and typed a digit (e.g. '1' -> raw is '10')
+        nextStr = raw[0];
+      } else if (/^0[1-9]$/.test(raw)) {
+        // User placed cursor after 0 and typed a digit (e.g. '1' -> raw is '01')
+        nextStr = raw[1];
+      } else if (raw.length > 2 && raw.endsWith('0') && /^\d+0$/.test(raw)) {
+        // Multi-digit or paste before 0
+        nextStr = raw.slice(0, -1);
+      } else if (raw.length > 2 && raw.startsWith('0') && /^0\d+$/.test(raw)) {
+        // Multi-digit or paste after 0
+        nextStr = raw.slice(1);
+      } else if (raw === '00') {
+        nextStr = '0';
+      } else if (raw === '.0' || raw === ',0') {
+        nextStr = '0.';
+      }
     }
 
     setLocalStr(nextStr);
 
     if (nextStr.trim() === '') {
       // Intermediate state while typing: keep valid state pending or reset to min on blur
+      setIsInvalid(false);
+      onInvalidChange?.(false);
+      return;
+    }
+
+    // In-progress decimal typing state (e.g. "12." or "0.")
+    const normalized = nextStr.trim().replace(',', '.');
+    if (normalized.endsWith('.') && /^-?\d+\.$/.test(normalized)) {
       setIsInvalid(false);
       onInvalidChange?.(false);
       return;
@@ -85,7 +111,14 @@ export function NumberStepper({
       return;
     }
 
-    const validation = validateNumericString(localStr, min, max, true);
+    // If blurred with trailing decimal point (e.g. "12.")
+    let strToValidate = localStr.trim();
+    if (strToValidate.endsWith('.') || strToValidate.endsWith(',')) {
+      strToValidate = strToValidate.slice(0, -1);
+      if (strToValidate === '') strToValidate = '0';
+    }
+
+    const validation = validateNumericString(strToValidate, min, max, true);
     if (validation.isValid && validation.parsedValue !== undefined) {
       setIsInvalid(false);
       onInvalidChange?.(false);
@@ -157,7 +190,12 @@ export function NumberStepper({
           inputMode="decimal"
           value={localStr}
           onChange={handleInputChange}
-          onFocus={() => setIsFocused(true)}
+          onFocus={(e) => {
+            setIsFocused(true);
+            if (localStr === '0') {
+              e.currentTarget.select();
+            }
+          }}
           onBlur={handleBlur}
           placeholder={placeholder}
           aria-label={ariaLabel}

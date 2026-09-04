@@ -114,11 +114,27 @@ export function NumericInput({
     isInternalChangeRef.current = true;
 
     // Handle "0 + new digit" UX fix:
-    // If current field is just "0" and user types a non-zero digit (e.g. '1' -> raw is "01"),
-    // replace leading "0" with that digit so it becomes "1", not "01".
+    // If current field is just "0" and user starts entering a new number,
+    // replace the existing 0 with the first digit typed regardless of cursor position.
     let nextStr = raw;
-    if (localStr === '0' && /^0[1-9]$/.test(raw)) {
-      nextStr = raw.substring(1);
+    if (localStr === '0') {
+      if (/^[1-9]0$/.test(raw)) {
+        // User clicked before 0 and typed a digit (e.g. '1' -> raw is '10')
+        nextStr = raw[0];
+      } else if (/^0[1-9]$/.test(raw)) {
+        // User placed cursor after 0 and typed a digit (e.g. '1' -> raw is '01')
+        nextStr = raw[1];
+      } else if (raw.length > 2 && raw.endsWith('0') && /^\d+0$/.test(raw)) {
+        // Multi-digit or paste before 0
+        nextStr = raw.slice(0, -1);
+      } else if (raw.length > 2 && raw.startsWith('0') && /^0\d+$/.test(raw)) {
+        // Multi-digit or paste after 0
+        nextStr = raw.slice(1);
+      } else if (raw === '00') {
+        nextStr = '0';
+      } else if (raw === '.0' || raw === ',0') {
+        nextStr = '0.';
+      }
     }
 
     setLocalStr(nextStr);
@@ -133,6 +149,14 @@ export function NumericInput({
         setErrorMessage(null);
         onInvalidChange?.(false);
       }
+      return;
+    }
+
+    // In-progress decimal typing state (e.g. "12." or "0.")
+    const normalized = nextStr.trim().replace(',', '.');
+    if (normalized.endsWith('.') && /^-?\d+\.$/.test(normalized)) {
+      setErrorMessage(null);
+      onInvalidChange?.(false);
       return;
     }
 
@@ -171,13 +195,20 @@ export function NumericInput({
       return;
     }
 
+    // If blurred with trailing decimal point (e.g. "12.")
+    let strToValidate = localStr.trim();
+    if (strToValidate.endsWith('.') || strToValidate.endsWith(',')) {
+      strToValidate = strToValidate.slice(0, -1);
+      if (strToValidate === '') strToValidate = '0';
+    }
+
     // Validate on blur
-    const validation = validateNumericString(localStr, min, max, allowZero);
+    const validation = validateNumericString(strToValidate, min, max, allowZero);
     if (validation.isValid && validation.parsedValue !== undefined) {
       setErrorMessage(null);
       onInvalidChange?.(false);
       onChange(validation.parsedValue);
-      // Clean up format (e.g. normalize commas)
+      // Clean up format (e.g. normalize commas and trailing dots)
       setLocalStr(String(validation.parsedValue));
     } else {
       const err = validation.error || 'Valeur numérique invalide';
@@ -204,7 +235,12 @@ export function NumericInput({
           inputMode="decimal"
           value={localStr}
           onChange={handleChange}
-          onFocus={() => setIsFocused(true)}
+          onFocus={(e) => {
+            setIsFocused(true);
+            if (localStr === '0') {
+              e.currentTarget.select();
+            }
+          }}
           onBlur={handleBlur}
           placeholder={placeholder}
           aria-label={ariaLabel}
