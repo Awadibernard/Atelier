@@ -102,22 +102,40 @@ export function createQuotePdfFile(
  * Safely renders a quote to a PNG Image File using an isolated sandboxed iframe
  * with 100% standard hex/rgb styles, completely avoiding modern CSS 'oklch' parser errors.
  */
+export interface QuoteImageResult {
+  file: File;
+  filename: string;
+  dataUrl: string;
+  blob: Blob;
+  totalPages: number;
+  pageDataUrls: string[];
+}
+
+/**
+ * Safely renders a quote to a PNG Image File using an isolated sandboxed iframe
+ * with 100% standard hex/rgb styles, strictly adhering to A4 Portrait (210:297) proportions.
+ * Supports multi-page quotes with zero text truncation or unreadable downscaling.
+ */
 export async function createQuoteImageFile(
   quote: Quote,
   profile: BusinessProfile,
   entitlement?: UserEntitlement
-): Promise<{ file: File; filename: string; dataUrl: string; blob: Blob }> {
+): Promise<QuoteImageResult> {
   const rawCustomer = quote.customer.name?.trim() || 'client';
   const safeCustomer = rawCustomer.replace(/[^a-zA-Z0-9_-]/g, '_');
   const filename = `Devis_${quote.quoteNumber}_${safeCustomer}.png`;
+
+  // Standard A4 dimensions at 96 DPI: 210mm x 297mm = 794px x 1123px (Ratio 210:297)
+  const a4Width = 794;
+  const a4Height = 1123;
 
   // Create isolated sandbox iframe
   const iframe = document.createElement('iframe');
   iframe.style.position = 'fixed';
   iframe.style.left = '-9999px';
   iframe.style.top = '0';
-  iframe.style.width = '794px'; // Standard A4 width at 96 DPI
-  iframe.style.height = '1123px'; // Standard A4 height at 96 DPI
+  iframe.style.width = `${a4Width}px`;
+  iframe.style.height = `${a4Height}px`;
   iframe.style.border = '0';
   iframe.style.visibility = 'hidden';
   iframe.setAttribute('aria-hidden', 'true');
@@ -167,23 +185,67 @@ export async function createQuoteImageFile(
         checkReady();
       } else {
         iframe.onload = () => checkReady();
-        // Fallback timeout in case onload doesn't fire
         setTimeout(checkReady, 200);
       }
     });
 
-    // Locate the sheet element inside the isolated iframe
-    const targetElement = (doc.querySelector('.sheet') as HTMLElement) || doc.body;
+    // Detect total pages in the generated document
+    const pageElements = Array.from(doc.querySelectorAll('.a4-page'));
+    const totalPages = Math.max(1, pageElements.length);
+    const totalHeight = totalPages * a4Height;
 
-    // Execute html2canvas in the isolated document context
+    // Adjust iframe height to fit all A4 pages without scroll
+    iframe.style.height = `${totalHeight}px`;
+
+    // Target the wrapper container
+    const targetElement = (doc.querySelector('.sheet-wrapper') as HTMLElement) || doc.body;
+
+    // Execute html2canvas at scale: 2 for sharp retina rendering (1588px width)
     const canvas = await html2canvas(targetElement, {
-      scale: 2, // High resolution (retina crispness)
+      scale: 2,
       useCORS: true,
       allowTaint: true,
       backgroundColor: '#ffffff',
       logging: false,
-      windowWidth: 794,
+      width: a4Width,
+      height: totalHeight,
+      windowWidth: a4Width,
+      windowHeight: totalHeight,
+      x: 0,
+      y: 0,
+      scrollX: 0,
+      scrollY: 0,
     });
+
+    // Extract per-page images if multi-page
+    const pageDataUrls: string[] = [];
+    const retinaWidth = a4Width * 2;
+    const retinaHeight = a4Height * 2;
+
+    if (totalPages === 1) {
+      pageDataUrls.push(canvas.toDataURL('image/png', 0.95));
+    } else {
+      for (let p = 0; p < totalPages; p++) {
+        const pageCanvas = document.createElement('canvas');
+        pageCanvas.width = retinaWidth;
+        pageCanvas.height = retinaHeight;
+        const pCtx = pageCanvas.getContext('2d');
+        if (pCtx) {
+          pCtx.drawImage(
+            canvas,
+            0,
+            p * retinaHeight,
+            retinaWidth,
+            retinaHeight,
+            0,
+            0,
+            retinaWidth,
+            retinaHeight
+          );
+          pageDataUrls.push(pageCanvas.toDataURL('image/png', 0.95));
+        }
+      }
+    }
 
     return new Promise((resolve, reject) => {
       canvas.toBlob((blob) => {
@@ -193,7 +255,14 @@ export async function createQuoteImageFile(
         }
         const file = new File([blob], filename, { type: 'image/png' });
         const dataUrl = canvas.toDataURL('image/png');
-        resolve({ file, filename, dataUrl, blob });
+        resolve({
+          file,
+          filename,
+          dataUrl,
+          blob,
+          totalPages,
+          pageDataUrls: pageDataUrls.length > 0 ? pageDataUrls : [dataUrl],
+        });
       }, 'image/png', 0.95);
     });
   } catch (err: any) {
